@@ -55,6 +55,7 @@ contract Racks {
     uint256 public tradingStart;                    // 0 until enableTrading()
     uint256 public launchSupply;
     uint256 public maxWallet;
+    bool public mintRenounced;
 
     address public owner;
     address public vault;
@@ -199,7 +200,10 @@ contract Racks {
         allowance[msg.sender][spender] = amount; emit Approval(msg.sender, spender, amount); return true;
     }
 
+    function renounceMint() external onlyOwner { mintRenounced = true; }
+
     function mint(address to, uint256 amount) external onlyOwner {
+        require(!mintRenounced, "mint renounced");
         uint256 dt = _preOp(); _credit(to, amount); _postOp(dt);
         emit Transfer(address(0), to, amount);
     }
