@@ -78,8 +78,10 @@ contract CaymanIslands is ReentrancyGuard {
         require(b < 3 && amount > 0, "bad");
         _accrue(b);
         require(usdg.transferFrom(msg.sender, reserve, FEE[b]), "fee");
+        uint256 beforeBal = racks.balanceOf(address(this));
         require(racks.transferFrom(msg.sender, address(this), amount), "pull");
-        uint256 s = amount * RAY / bIndex[b];
+        uint256 received = racks.balanceOf(address(this)) - beforeBal; // actual (fee/rounding safe)
+        uint256 s = received * RAY / bIndex[b];
         scaled[msg.sender][b] += s;
         totalScaled[b] += s;
         unlockAt[msg.sender][b] = block.timestamp + DURATION[b];

@@ -8,9 +8,9 @@ pragma solidity ^0.8.20;
 ///         Impact term lifts the tax on the trade's own side (catches the first dumper).
 library DynamicTax {
     uint256 internal constant SELL_BASE = 400;
-    uint256 internal constant SELL_CAP  = 700;
+    uint256 internal constant SELL_CAP  = 800;
     uint256 internal constant BUY_BASE  = 400;
-    uint256 internal constant BUY_CAP   = 500;
+    uint256 internal constant BUY_CAP   = 800;
     uint256 internal constant FLOOR     = 100;
     uint256 internal constant D_FULL    = 1000; // 10% dislocation = full state ramp
     uint256 internal constant I_FULL    = 500;  // 5% single-trade impact = full impact ramp

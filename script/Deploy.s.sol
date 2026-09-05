@@ -48,6 +48,10 @@ contract Deploy is Script {
         racks.setTaxExempt(address(vault), true);
         racks.setTaxExempt(address(agents), true);
 
+        // start supply: 69,420,000,000 RACKS (melts from here). Sent to the treasury/reserve
+        // for distribution (LP, airdrop, presale). Adjust recipient/splits before mainnet.
+        racks.mint(reserve, 69_420_000_000 ether);
+
         vm.stopBroadcast();
 
         console2.log("RACKS   ", address(racks));

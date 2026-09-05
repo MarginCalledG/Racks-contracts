@@ -48,6 +48,14 @@ contract Racks {
     uint256 public constant MIN_EPOCH = 900;  // 15-min floor
     uint256 public checkpointEpoch;
 
+    // launch guardrails (all keyed off enableTrading())
+    uint256 public constant LAUNCH_WINDOW  = 1 hours;
+    uint256 public constant MAX_WALLET_BPS = 80;   // 0.8% of launch supply
+    uint256 public constant LAUNCH_TAX_BPS = 800;  // 8% flat during the launch hour
+    uint256 public tradingStart;                    // 0 until enableTrading()
+    uint256 public launchSupply;
+    uint256 public maxWallet;
+
     address public owner;
     address public vault;
 
@@ -127,13 +135,14 @@ contract Racks {
         return _totalNominalExempt + (_totalScaled * index() / RAY);
     }
 
-    function _debit(address from, uint256 amount) internal {
-        if (isExempt[from]) { _nominal[from] -= amount; _totalNominalExempt -= amount; }
-        else {
-            uint256 s = amount * RAY / indexCheckpoint;
-            _scaled[from] -= s; _totalScaled -= s;
-            if (isFloatExcluded[from]) _totalScaledFloatExcl -= s;
-        }
+    function _debit(address from, uint256 amount) internal returns (uint256 removed) {
+        if (isExempt[from]) { _nominal[from] -= amount; _totalNominalExempt -= amount; return amount; }
+        uint256 s = amount * RAY / indexCheckpoint;
+        uint256 have = _scaled[from];
+        if (s > have) s = have;                 // full-balance rounding: move all, never underflow
+        _scaled[from] -= s; _totalScaled -= s;
+        if (isFloatExcluded[from]) _totalScaledFloatExcl -= s;
+        removed = s * indexCheckpoint / RAY;     // exact value removed (conservation)
     }
 
     function _credit(address to, uint256 amount) internal {
@@ -157,25 +166,33 @@ contract Racks {
     }
 
     /// tax applies ONLY to pool trades (buy = pool->user, sell = user->pool); never plain transfers
-    function _applyTax(address from, address to, uint256 amount) internal returns (uint256) {
-        if (taxOracle == address(0) || taxWallet == address(0)) return 0;
+    function _taxBps(address from, address to, uint256 amount) internal returns (uint256) {
+        if (taxWallet == address(0)) return 0;
         bool sell = isDex[to];
         bool buy  = isDex[from];
         if (!sell && !buy) return 0;                        // wallet<->wallet: no tax
         if (isTaxExempt[from] || isTaxExempt[to]) return 0; // system contracts exempt
+        if (inLaunchWindow()) return LAUNCH_TAX_BPS;        // flat 8% during launch hour
+        if (taxOracle == address(0)) return 0;
         ITaxOracle(taxOracle).update();                     // advance TWAP accumulator on the trade
-        uint256 bps = ITaxOracle(taxOracle).taxBps(amount, sell);
-        return amount * bps / 10000;
+        return ITaxOracle(taxOracle).taxBps(amount, sell);
     }
 
     function _move(address from, address to, uint256 amount) internal {
         uint256 dt = _preOp();
-        uint256 tax = _applyTax(from, to, amount);
-        _debit(from, amount);
+        uint256 bal = balanceOf(from);
+        if (amount > bal) amount = bal;                     // clamp to real balance (max-transfer safe)
+        uint256 bps = _taxBps(from, to, amount);
+        uint256 removed = _debit(from, amount);
+        uint256 tax = removed * bps / 10000;
         if (tax > 0) { _credit(taxWallet, tax); emit Transfer(from, taxWallet, tax); }
-        _credit(to, amount - tax);
+        _credit(to, removed - tax);
+        // launch anti-snipe: cap BUYS (pool -> wallet) per wallet during the first hour
+        if (inLaunchWindow() && isDex[from] && !isDex[to] && !isExempt[to] && !isTaxExempt[to]) {
+            require(balanceOf(to) <= maxWallet, "max wallet");
+        }
         _postOp(dt);
-        emit Transfer(from, to, amount - tax);
+        emit Transfer(from, to, removed - tax);
     }
 
     function approve(address spender, uint256 amount) external returns (bool) {
@@ -216,6 +233,15 @@ contract Racks {
     }
 
     function setVault(address l) external onlyOwner { vault = l; }
+    function enableTrading() external onlyOwner {
+        require(tradingStart == 0, "started");
+        tradingStart = block.timestamp;
+        launchSupply = _totalNominalExempt + (_totalScaled * index() / RAY);
+        maxWallet = launchSupply * MAX_WALLET_BPS / 10000;
+    }
+    function inLaunchWindow() public view returns (bool) {
+        return tradingStart != 0 && block.timestamp < tradingStart + LAUNCH_WINDOW;
+    }
     function setEpochLength(uint256 s) external onlyOwner {
         require(s >= MIN_EPOCH, "epoch too short");
         if (epochNow() > checkpointEpoch) { indexCheckpoint = index(); } // settle under old length
