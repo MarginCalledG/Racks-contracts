@@ -57,5 +57,8 @@ contract AgentInvariant is Test {
     /// never reserve more prize than the pot actually holds
     function invariant_allocatedLeqPot() public view { assertLe(agent.allocatedPot(), vault.potBalance()); }
     /// vault stays solvent for its vaults even as agents drain the pot
-    function invariant_vaultSolvent() public view { assertGe(h.k().balanceOf(address(vault)), vault.totalClaims()); }
+    function invariant_vaultSolvent() public view {
+        uint256 c; for (uint8 b; b < 3; b++) c += vault.claimOf(h.users(0), b);
+        assertGe(h.k().balanceOf(address(vault)), c + vault.pot());
+    }
 }

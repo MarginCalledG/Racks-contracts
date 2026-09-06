@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {RayMath} from "./RayMath.sol";
+import {ReentrancyGuard} from "./ReentrancyGuard.sol";
 
 interface ITaxOracle {
     function update() external;
@@ -9,7 +10,7 @@ interface ITaxOracle {
 }
 
 /// @title Racks (Stage 1, hardened) — demurrage token, free-float-coupled rate, 24h-smoothed
-contract Racks {
+contract Racks is ReentrancyGuard {
     uint256 internal constant RAY = 1e27;
     uint256 public constant TAU = 86400; // 24h smoothing window
 
@@ -155,11 +156,11 @@ contract Racks {
         }
     }
 
-    function transfer(address to, uint256 amount) external returns (bool) {
+    function transfer(address to, uint256 amount) external nonReentrant returns (bool) {
         _move(msg.sender, to, amount); return true;
     }
 
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+    function transferFrom(address from, address to, uint256 amount) external nonReentrant returns (bool) {
         uint256 a = allowance[from][msg.sender];
         require(a >= amount, "allowance");
         if (a != type(uint256).max) allowance[from][msg.sender] = a - amount;
@@ -182,7 +183,7 @@ contract Racks {
     function _move(address from, address to, uint256 amount) internal {
         uint256 dt = _preOp();
         uint256 bal = balanceOf(from);
-        if (amount > bal) amount = bal;                     // clamp to real balance (max-transfer safe)
+        require(amount <= bal, "balance");                  // R2 fix: standard ERC20 revert (no silent clamp)
         uint256 bps = _taxBps(from, to, amount);
         uint256 removed = _debit(from, amount);
         uint256 tax = removed * bps / 10000;
@@ -198,6 +199,15 @@ contract Racks {
 
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount; emit Approval(msg.sender, spender, amount); return true;
+    }
+
+    /// burn caller's own RACKS (supply-reducing). Used by the vault to apply real melt to expired locks.
+    function burn(uint256 amount) external nonReentrant {
+        require(amount <= balanceOf(msg.sender), "balance");
+        uint256 dt = _preOp();
+        uint256 removed = _debit(msg.sender, amount);
+        _postOp(dt);
+        emit Transfer(msg.sender, address(0), removed);
     }
 
     function renounceMint() external onlyOwner { mintRenounced = true; }
@@ -236,11 +246,16 @@ contract Racks {
         isFloatExcluded[a] = ex; _postOp(dt);
     }
 
+    address public pendingOwner;
+    function transferOwnership(address n) external onlyOwner { pendingOwner = n; }
+    function acceptOwnership() external { require(msg.sender == pendingOwner, "!pending"); owner = pendingOwner; pendingOwner = address(0); }
+
     function setVault(address l) external onlyOwner { vault = l; }
     function enableTrading() external onlyOwner {
         require(tradingStart == 0, "started");
         tradingStart = block.timestamp;
         launchSupply = _totalNominalExempt + (_totalScaled * index() / RAY);
+        require(launchSupply > 0, "no supply");         // R5 fix: 0 supply would set maxWallet=0 and block all buys
         maxWallet = launchSupply * MAX_WALLET_BPS / 10000;
     }
     function inLaunchWindow() public view returns (bool) {

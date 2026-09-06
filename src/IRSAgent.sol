@@ -46,6 +46,8 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     mapping(uint32 => bool) public settled;
     mapping(uint256 => mapping(uint32 => uint256)) public shares;
     uint256 public allocatedPot;
+    mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
+    uint32 public constant CLAIM_WINDOW = 90;          // epochs (~30 days) to claim before sweep
 
     event Minted(uint256 indexed id, address indexed owner);
     event Revealed(uint256 indexed id, uint8 tier);
@@ -124,6 +126,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     function rawFulfill(uint256 reqId, uint256 word) external {
         require(msg.sender == address(vrf), "!vrf");
         Req memory q = reqs[reqId];
+        require(q.kind != 0, "unknown req");   // A2 fix: replay/unknown id must not corrupt state
         delete reqs[reqId];
         if (q.kind == 1) {
             uint256 rr = word % 100;
@@ -152,6 +155,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
             uint256 prize = pot > allocatedPot ? pot - allocatedPot : 0;
             rewardPerShareRay[e] = prize * RAY / totalShares[e];
             allocatedPot += prize;
+            epochUnclaimed[e] = prize;
         }
     }
 
@@ -164,6 +168,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         uint256 payout = w * rewardPerShareRay[e] / RAY;
         if (payout > allocatedPot) payout = allocatedPot;
         allocatedPot -= payout;
+        epochUnclaimed[e] = epochUnclaimed[e] > payout ? epochUnclaimed[e] - payout : 0;
         vault.drawPot(msg.sender, payout);
         emit Claimed(id, e, payout);
     }
@@ -181,6 +186,16 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     function pending(uint256 id, uint32 e) external view returns (uint256) {
         if (!settled[e] || shares[id][e] == 0) return 0;
         return shares[id][e] * rewardPerShareRay[e] / RAY;
+    }
+
+    /// A5 fix: after CLAIM_WINDOW epochs, whatever a settled epoch never paid out returns to the pot
+    /// (otherwise forgotten claims would lock pot forever). Permissionless.
+    function sweepStale(uint32 e) external {
+        require(settled[e] && currentEpoch() > e + CLAIM_WINDOW, "not stale");
+        uint256 left = epochUnclaimed[e];
+        if (left == 0) return;
+        epochUnclaimed[e] = 0;
+        allocatedPot = allocatedPot > left ? allocatedPot - left : 0; // released back into potBalance
     }
 
     function setReserve(address r) external onlyAdmin { reserve = r; }

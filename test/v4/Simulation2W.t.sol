@@ -207,7 +207,7 @@ contract Simulation2W is Test {
         emit log_named_uint("total agent payouts from pot (RACKS)", payoutsTotal);
         emit log_named_uint("pot remaining", vault.potBalance());
         emit log_named_uint("wallet8 late unlock: claim", w8claim);
-        emit log_named_uint("wallet8 late unlock: got (4% penalty)", w8got);
+        emit log_named_uint("wallet8 late unlock: got (2d normal melt, burned)", w8got);
 
         // ---- ASSERTIONS ----
         assertGe(volumeUsdg, 1_000_000e6, "need >= $1M volume");
@@ -224,8 +224,12 @@ contract Simulation2W is Test {
         }
         // vaults: 1-day tier bled ~2%/day, 3-day ~1.5%/day, 14-day exact; late unlock penalized
         assertGt(payoutsTotal, 0, "agents must have won pot");
-        assertGe(k.balanceOf(address(vault)), vault.totalClaims(), "vault solvent");
-        assertApproxEqRel(w8got, w8claim * 96 / 100, 0.01e18, "2 days late = 4% penalty");
+        { uint256 c; for (uint i = 0; i < 10; i++) for (uint8 b; b < 3; b++) c += vault.claimOf(W[i], b);
+          assertGe(k.balanceOf(address(vault)), c + vault.pot(), "vault solvent"); }
+        // 2 days past expiry = 2 days of NORMAL melt (~0.931^2 at max rate), burned -> nothing to the pot
+        assertLt(w8got, 1_000_000 ether * 90 / 100, "expired 14d lock must have melted");
+        assertGt(w8got, 1_000_000 ether * 80 / 100, "but only ~2 days worth");
+        assertEq(w8got, w8claim, "no penalty anymore: payout == melted claim");
         // starved agent #100 must be dead; fed ones alive
         assertFalse(ag.alive(100), "unfed agent must die");
         assertTrue(ag.alive(1), "fed agent alive");

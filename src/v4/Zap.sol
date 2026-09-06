@@ -87,23 +87,25 @@ contract Zap {
     function buyRacks(uint256 usdgIn, uint256 minRacksOut, address to) external returns (uint256 racksOut) {
         require(IERC20x(usdg).transferFrom(msg.sender, address(this), usdgIn), "pull");
         uint256 use = _launchCapUsdg(usdgIn, to);
-        if (use == 0) { require(IERC20x(usdg).transfer(to, usdgIn), "refund"); return 0; }
+        if (use == 0) { require(IERC20x(usdg).transfer(msg.sender, usdgIn), "refund"); return 0; }
 
         IERC20x(usdg).approve(address(swapper), use);
         uint256 spyAmt = swapper.swap(spyUsdg, _dir(spyUsdg, usdg), use, 0, address(this));
         IERC20x(spy).approve(address(swapper), spyAmt);
         uint256 wrAmt  = swapper.swap(wrSpy, _dir(wrSpy, spy), spyAmt, 0, address(this));
-        racksOut = w.unwrap(wrAmt);
+        w.unwrap(wrAmt);
+        racksOut = racks.balanceOf(address(this));          // actual held (rebasing rounding-safe)
         require(racksOut >= minRacksOut, "slippage");
         require(racks.transfer(to, racksOut), "send");
-        if (use < usdgIn) require(IERC20x(usdg).transfer(to, usdgIn - use), "refund");
+        if (use < usdgIn) require(IERC20x(usdg).transfer(msg.sender, usdgIn - use), "refund"); // refund the PAYER
     }
 
     /// RACKS in -> USDG out (post sell-side tax).
     function sellRacks(uint256 racksIn, uint256 minUsdgOut, address to) external returns (uint256 usdgOut) {
         require(racks.transferFrom(msg.sender, address(this), racksIn), "pull");
-        racks.approve(address(w), racksIn);
-        uint256 wrAmt  = w.wrap(racksIn);
+        uint256 have = racks.balanceOf(address(this));      // actual received (rounding-safe)
+        racks.approve(address(w), have);
+        uint256 wrAmt  = w.wrap(have);
         w.approve(address(swapper), wrAmt);
         uint256 spyAmt = swapper.swap(wrSpy, _dir(wrSpy, address(w)), wrAmt, 0, address(this));
         IERC20x(spy).approve(address(swapper), spyAmt);

@@ -86,6 +86,21 @@ Begruendung:
 4. **REGEL: der wRACKS-Wrapper darf NIE melt-exempt sein** (waere eine Demurrage-Fluchttuer).
    Nur tax-exempt. Guard in beiden Deploy-Skripten: `require(!racks.isExempt(wracks))`.
 
+## Vault-Umbau: "abgelaufen = normales Token" (CaymanIslands neu)
+Regel: WAEHREND des Locks melt-geschuetzt, Kurz-Stufen (1d 2%/d, 3d 1.5%/d) bleeden in den Agent-Pot.
+NACH Ablauf (nicht relockt) bleedet NICHTS mehr in den Pot — die Position unterliegt dem NORMALEN
+RACKS-Melt (4.2–6.9%/d, aktuelle Rate) und der Melt wird GEBRANNT (Racks.burn, Supply schrumpft).
+Gilt fuer alle 3 Stufen; die alte 2%/d-Strafe der 14d-Stufe entfaellt (loest zugleich das Audit-
+Problem "Strafe per relock umgehbar"). Implementierung: pro-Nutzer-Positionen (principal/lockedAt/
+unlockAt) statt geteiltem Bucket-Index; expliziter `pot`; Abrechnung bei lock/relock/unlock und via
+permissionless `harvest(user, tier)`; `fundPot(amount)` zum Seeden des Casinos (z.B. am Launch).
+Hinweis: der Pot waechst bei ABRECHNUNG (nicht sekuendlich) — Frontend/Keeper sollten aktive
+Kurz-Positionen periodisch harvesten, damit Agenten immer etwas zu raiden haben.
+
+## Security-Audit durchgefuehrt -> siehe AUDIT.md
+1 kritischer (Share-Inflation im Wrapper, PoC-bewiesen), 4 mittlere, 5 niedrige Funde — alle gefixt,
+jeder mit Regressionstest (test/Audit.t.sol). Offene Design-Entscheidungen in AUDIT.md.
+
 ## Naechste Phase (Integration + Launch-Vorbereitung)
 1. Testnet-SPY-Adresse klaeren (oder Mock-SPY fuer Tests).
 2. wRACKS/SPY-Pool auf RHs v4 (PoolManager direkt, wie rhcswap zeigt).

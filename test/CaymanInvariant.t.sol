@@ -9,6 +9,7 @@ import {MockERC20} from "./MockERC20.sol";
 contract CaymanHandler is Test {
     Racks public k; CaymanIslands public vault; MockERC20 public usdg;
     address[] public users;
+    function usersLen() external view returns (uint256) { return users.length; }
     constructor() {
         k = new Racks(1e27 / 1e6);
         usdg = new MockERC20();
@@ -46,7 +47,10 @@ contract CaymanInvariant is Test {
     CaymanHandler h; Racks k; CaymanIslands vault;
     function setUp() public { h = new CaymanHandler(); k = h.k(); vault = h.vault(); targetContract(address(h)); }
     /// the vault always holds enough RACKS to cover every vault's claim
-    function invariant_solvent() public view { assertGe(k.balanceOf(address(vault)), vault.totalClaims()); }
+    function _claims() internal view returns (uint256 t) {
+        for (uint256 i; i < h.usersLen(); i++) for (uint8 b; b < 3; b++) t += vault.claimOf(h.users(i), b);
+    }
+    function invariant_solvent() public view { assertGe(k.balanceOf(address(vault)), _claims() + vault.pot()); }
     /// pot computation never underflows/reverts
     function invariant_potComputes() public view { vault.potBalance(); }
 }

@@ -59,6 +59,7 @@ contract CaymanTest is Test {
         assertEq(vault.potBalance(), 0);
         vm.warp(block.timestamp + 1 days);
         assertApproxEqRel(vault.claimOf(alice, 0), 98_000 ether, 0.002e18);
+        vault.harvest(alice, 0);                         // settle accrued bleed into the pot
         assertApproxEqRel(vault.potBalance(), 2_000 ether, 0.02e18);
     }
 
@@ -67,6 +68,7 @@ contract CaymanTest is Test {
         vm.prank(alice);
         vault.lock(1, 100_000 ether);
         vm.warp(block.timestamp + 1 days);
+        vault.harvest(alice, 1);
         assertApproxEqRel(vault.potBalance(), 1_500 ether, 0.02e18);
     }
 
@@ -92,6 +94,7 @@ contract CaymanTest is Test {
         vm.prank(alice);
         vault.lock(0, 100_000 ether);
         vm.warp(block.timestamp + 1 days);
+        vault.harvest(alice, 0);
         uint256 pot = vault.potBalance();
         assertGt(pot, 0);
         vault.drawPot(winner, pot / 2);
@@ -112,13 +115,18 @@ contract CaymanTest is Test {
     }
 
     // an expired 14-day position bleeds to the pot at 2%/day until withdrawn/relocked
-    function testPostExpiryPenalty() public {
+    function testExpiredPositionMeltsNormally() public {
         vm.prank(alice);
-        vault.lock(2, 100_000 ether);         // 14-day, 0 bleed while locked
-        vm.warp(block.timestamp + 14 days + 3 days); // 3 days past expiry
-        vm.prank(alice);
-        vault.unlock(2);
-        // ~6% penalty (3d * 2%/day) stayed in the vault as pot
-        assertApproxEqRel(vault.potBalance(), 6_000 ether, 0.02e18);
+        vault.lock(2, 100_000 ether);                 // 14-day, 0 bleed while locked
+        vm.warp(block.timestamp + 14 days);           // exactly at expiry: still full
+        assertApproxEqAbs(vault.claimOf(alice, 2), 100_000 ether, 1e6);
+        uint256 supplyBefore = k.totalSupply();
+        vm.warp(block.timestamp + 3 days);            // 3 days past expiry -> normal melt (4.2-6.9%/d)
+        uint256 claim = vault.claimOf(alice, 2);
+        assertLt(claim, 100_000 ether * 88 / 100, "must have melted >12% in 3d");
+        assertGt(claim, 100_000 ether * 78 / 100, "but not more than ~21%");
+        vm.prank(alice); vault.unlock(2);
+        assertEq(vault.potBalance(), 0, "expired melt must NOT go to the pot");
+        assertLt(k.totalSupply(), supplyBefore, "expired melt is BURNED (supply shrinks)");
     }
 }

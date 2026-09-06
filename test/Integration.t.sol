@@ -68,6 +68,7 @@ contract IntegrationTest is Test {
 
         // pool bleeds into the pot
         vm.warp(block.timestamp + 1 days);
+        vault.harvest(carol, 0);                     // carol is the short-locker; settle her bleed
         assertGt(vault.potBalance(), 0);
 
         // alice deploys an IRS Agent, audits, claims

@@ -71,7 +71,7 @@ contract LaunchRealistic is Test {
     // what would a $500 buy grab WITHOUT the cap? (measure the raw danger)
     function testUncappedDanger() public onFork {
         // simulate by buying directly through the pools (bypassing the zap cap) with $500
-        address whale = address(0xDEAD);
+        address whale = address(0xBADB0B);
         deal(USDG, whale, 500e6);
         PoolKey memory spyUsdg = PoolKey(Currency.wrap(SPY), Currency.wrap(USDG), 3000, 60, address(0));
         vm.startPrank(whale);
@@ -84,6 +84,8 @@ contract LaunchRealistic is Test {
         vm.expectRevert();
         sw.swap(wrSpy, spyIsC0, spyOut, 0, whale);
         vm.stopPrank();
+        emit log("direct-to-pool over-cap buy REVERTED (sniper blocked)");
+        assertLt(IERC20x(wa).balanceOf(whale), maxW, "sniper got nothing over cap");
         emit log("direct-to-pool over-cap buy REVERTED (sniper blocked)");
         assertLt(IERC20x(wa).balanceOf(whale), maxW, "sniper got nothing over cap");
     }

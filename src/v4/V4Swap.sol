@@ -43,7 +43,7 @@ contract V4Swap {
 
     constructor(address _pm) { pm = IPoolManager(_pm); }
 
-    struct CB { PoolKey key; bool zeroForOne; uint256 amountIn; uint256 minOut; address to; }
+    struct CB { PoolKey key; bool zeroForOne; uint256 amountIn; uint256 minOut; address to; address payer; }
 
     /// swap exact `amountIn` of the input token for the output token; reverts if out < minOut
     function swap(PoolKey calldata key, bool zeroForOne, uint256 amountIn, uint256 minOut, address to)
@@ -51,7 +51,7 @@ contract V4Swap {
     {
         address tokenIn = zeroForOne ? Currency.unwrap(key.currency0) : Currency.unwrap(key.currency1);
         require(IERC20x(tokenIn).transferFrom(msg.sender, address(this), amountIn), "pull");
-        bytes memory res = pm.unlock(abi.encode(CB(key, zeroForOne, amountIn, minOut, to)));
+        bytes memory res = pm.unlock(abi.encode(CB(key, zeroForOne, amountIn, minOut, to, msg.sender)));
         out = abi.decode(res, (uint256));
     }
 
@@ -88,7 +88,7 @@ contract V4Swap {
         pm.settle();
 
         // refund any unconsumed input (partial fill at price limit)
-        if (owed < c.amountIn) IERC20x(tokenIn).transfer(c.to, c.amountIn - owed);
+        if (owed < c.amountIn) IERC20x(tokenIn).transfer(c.payer, c.amountIn - owed); // refund the PAYER
 
         // collect the output for the user
         pm.take(curOut, c.to, outAmt);
