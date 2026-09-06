@@ -7,7 +7,9 @@ import {ReentrancyGuard} from "./ReentrancyGuard.sol";
 interface IERC20r { function transferFrom(address f, address t, uint256 a) external returns (bool); function decimals() external view returns (uint8); }
 interface ICaymanPot {
     function potBalance() external view returns (uint256);
+    function potLive() external view returns (uint256);
     function drawPot(address to, uint256 amount) external;
+    function harvestBatch(uint256 from, uint256 count) external;
 }
 interface IVRFCoordinatorR { function requestRandom(address cb) external returns (uint256); }
 
@@ -46,6 +48,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     mapping(uint32 => bool) public settled;
     mapping(uint256 => mapping(uint32 => uint256)) public shares;
     uint256 public allocatedPot;
+    uint256 public autoHarvest = 25; // positions harvested inside settle() (bounded gas); keepers page the rest
     mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
     uint32 public constant CLAIM_WINDOW = 90;          // epochs (~30 days) to claim before sweep
 
@@ -151,6 +154,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         if (settled[e]) return;
         settled[e] = true;
         if (totalShares[e] > 0) {
+            vault.harvestBatch(0, autoHarvest);      // book accrued bleed BEFORE reading the pot
             uint256 pot = vault.potBalance();
             uint256 prize = pot > allocatedPot ? pot - allocatedPot : 0;
             rewardPerShareRay[e] = prize * RAY / totalShares[e];
@@ -197,6 +201,10 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         epochUnclaimed[e] = 0;
         allocatedPot = allocatedPot > left ? allocatedPot - left : 0; // released back into potBalance
     }
+
+    function setAutoHarvest(uint256 n) external onlyAdmin { autoHarvest = n; }
+    /// what the next epoch will realistically pay from (for UIs)
+    function potPreview() external view returns (uint256) { return vault.potLive(); }
 
     function setReserve(address r) external onlyAdmin { reserve = r; }
 }

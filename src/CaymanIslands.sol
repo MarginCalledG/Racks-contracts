@@ -36,6 +36,43 @@ contract CaymanIslands is ReentrancyGuard {
     mapping(address => Pos[3]) internal _pos;
     uint256 public pot; // settled bleed, raidable by agents
 
+    // enumerable set of active positions (packed user|tier) so the LIVE pot can be computed and
+    // positions can be batch-harvested. swap-and-pop removal.
+    bytes32[] internal _active;
+    mapping(bytes32 => uint256) internal _activeIdx; // 1-based; 0 = not present
+    function _key(address u, uint8 b) internal pure returns (bytes32) { return bytes32(uint256(uint160(u)) << 8 | b); }
+    function _add(address u, uint8 b) internal { bytes32 k = _key(u, b); if (_activeIdx[k] == 0) { _active.push(k); _activeIdx[k] = _active.length; } }
+    function _remove(address u, uint8 b) internal {
+        bytes32 k = _key(u, b); uint256 i = _activeIdx[k]; if (i == 0) return;
+        bytes32 last = _active[_active.length - 1]; _active[i - 1] = last; _activeIdx[last] = i;
+        _active.pop(); delete _activeIdx[k];
+    }
+    function activeCount() external view returns (uint256) { return _active.length; }
+    function activeAt(uint256 i) external view returns (address u, uint8 b) { bytes32 k = _active[i]; return (address(uint160(uint256(k) >> 8)), uint8(uint256(k) & 0xff)); }
+
+    /// LIVE pot = settled pot + bleed that has accrued but not been settled yet, across ALL active
+    /// positions. This is what agent holders should see before attacking (never a misleading 0).
+    function potLive() external view returns (uint256 live) {
+        live = pot;
+        for (uint256 i; i < _active.length; i++) {
+            bytes32 k = _active[i]; address u = address(uint160(uint256(k) >> 8)); uint8 b = uint8(uint256(k) & 0xff);
+            (, uint256 bleedAmt,) = _split(_pos[u][b], b);
+            live += bleedAmt;
+        }
+    }
+
+    /// settle a page of active positions into the pot. Permissionless; used by keepers and by the
+    /// agent contract right before an epoch settles.
+    function harvestBatch(uint256 from, uint256 count) public nonReentrant {
+        uint256 n = _active.length; if (from >= n) return;
+        uint256 to = from + count; if (to > n) to = n;
+        for (uint256 i = from; i < to; i++) {
+            bytes32 k = _active[i]; _settle(address(uint160(uint256(k) >> 8)), uint8(uint256(k) & 0xff));
+        }
+        _syncLocked();
+    }
+    function harvestAll() external { harvestBatch(0, _active.length); }
+
     event Locked(address indexed u, uint8 tier, uint256 amount, uint256 unlockAt);
     event Unlocked(address indexed u, uint8 tier, uint256 amount);
     event Settled(address indexed u, uint8 tier, uint256 bleedToPot, uint256 meltBurned);
@@ -116,6 +153,7 @@ contract CaymanIslands is ReentrancyGuard {
         p.principal += received;
         p.lockedAt = uint64(block.timestamp);
         p.unlockAt = uint64(block.timestamp + DURATION[b]);
+        _add(msg.sender, b);
         _syncLocked();
         emit Locked(msg.sender, b, received, p.unlockAt);
     }
@@ -135,6 +173,7 @@ contract CaymanIslands is ReentrancyGuard {
         require(block.timestamp >= p.unlockAt, "locked");
         uint256 payout = _settle(msg.sender, b);
         delete _pos[msg.sender][b];
+        _remove(msg.sender, b);
         require(racks.transfer(msg.sender, payout), "send");
         _syncLocked();
         emit Unlocked(msg.sender, b, payout);

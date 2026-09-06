@@ -54,6 +54,22 @@ behaelt ~100% seiner Einlage.
 - **TaxSwapper ist v2-only** (Uniswap-V2-Router). Im v4-Modell sammelt sich die Tax als RACKS in der
   Tax-Wallet und wird NICHT automatisch in SPY gewandelt -> v4-Swapper fehlt noch (funktionale Luecke).
 
+## Runde 2 — nach dem Vault-Umbau (test/AuditVault.t.sol, test/v4/Stress10M.t.sol)
+Gezielt angegriffen: permissionless `harvest` (Griefing/Doppel-Melt), `_settle`-Solvenz ueber 200
+zufaellige Ops (lock/unlock/relock/harvest/drawPot/poke), Burn-Buchhaltung, Relock nach Ablauf,
+Hinzufuegen zu Position. Ergebnis: keine Exploits.
+- **Harvest-Spam** (72 Harvests/3 Tage) aendert das Ergebnis des Owners um ~0.12% — KEIN Diebstahl,
+  sondern legitimer Feedback: Pot zaehlt nicht als lockedSupply -> Free Float minimal hoeher -> globale
+  Melt-Rate rueckt Richtung 6.9%. Gedeckelt durch Band + 24h-Glaettung. Beobachtung, kein Bug.
+- Abgelaufene Positionen fuettern den Pot nie (30 Tage getestet); Melt wird exakt gebrannt
+  (Supply-Delta == Melt); Relock nach Ablauf wendet Melt zuerst an (kein Dodge).
+- Solvenz-Identitaet `vault == sum(claims) + pot` haelt ueber 200 Zufalls-Ops.
+- **$18.16M Volumen-Stress** (Fork): 40 Launch-Stunden-Kaeufe gegen den Cap ohne Revert, 400er
+  Churn, $2M-Einzeltrade, $1.5M Einweg-Druck je Richtung: Tax stets in [400, 800] bps, Pool danach
+  funktional, nichts in Zap/Swapper gestrandet, SPY im System erhalten.
+- Bekannte OPERATIVE Abhaengigkeit (kein Bug): der Pot waechst nur bei Abrechnung. Vor `settle(e)`
+  der Agenten sollte ein Keeper aktive Kurz-Positionen harvesten, sonst ist der Epochen-Preis 0.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

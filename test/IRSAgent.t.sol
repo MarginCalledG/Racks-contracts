@@ -100,7 +100,7 @@ contract AgentTest is Test {
         _attack(bob, bId, true);
 
         vm.warp(block.timestamp + 8 hours); // close the epoch
-        uint256 potAtSettle = vault.potBalance();
+        uint256 potAtSettle = vault.potLive();   // settle auto-harvests, so it distributes the LIVE pot
         agent.settle(e);
 
         uint256 pa = agent.pending(aId, e);

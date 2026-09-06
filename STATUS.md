@@ -94,10 +94,16 @@ Gilt fuer alle 3 Stufen; die alte 2%/d-Strafe der 14d-Stufe entfaellt (loest zug
 Problem "Strafe per relock umgehbar"). Implementierung: pro-Nutzer-Positionen (principal/lockedAt/
 unlockAt) statt geteiltem Bucket-Index; expliziter `pot`; Abrechnung bei lock/relock/unlock und via
 permissionless `harvest(user, tier)`; `fundPot(amount)` zum Seeden des Casinos (z.B. am Launch).
-Hinweis: der Pot waechst bei ABRECHNUNG (nicht sekuendlich) — Frontend/Keeper sollten aktive
-Kurz-Positionen periodisch harvesten, damit Agenten immer etwas zu raiden haben.
+Pot-Sichtbarkeit GELOEST: `potLive()` (Vault) / `potPreview()` (Agent) zeigen den ECHTEN Pot =
+gebucht + aufgelaufener, noch nicht abgerechneter Bleed aller aktiven Positionen -> nie ein
+irrefuehrendes "0", auch wenn kein Locker je eine TX macht. On-chain Liste aktiver Positionen
+(activeCount/activeAt), `harvestBatch(from,count)`/`harvestAll()` fuer Keeper.
+`IRSAgent.settle(e)` harvestet VOR dem Lesen des Pots selbst (autoHarvest=25 Positionen, admin-
+justierbar) -> Epochen-Preis ist nicht 0, nur weil niemand geharvestet hat. Keeper nur noch als
+Fallback bei >25 aktiven Kurz-Positionen (paging via harvestBatch).
+FRONTEND: den Pot immer ueber potLive()/potPreview() anzeigen, NICHT ueber potBalance().
 
-## Security-Audit durchgefuehrt -> siehe AUDIT.md
+## Security-Audit (2 Runden) -> siehe AUDIT.md — inkl. $18M Volumen-Stress, alles gruen
 1 kritischer (Share-Inflation im Wrapper, PoC-bewiesen), 4 mittlere, 5 niedrige Funde — alle gefixt,
 jeder mit Regressionstest (test/Audit.t.sol). Offene Design-Entscheidungen in AUDIT.md.
 
