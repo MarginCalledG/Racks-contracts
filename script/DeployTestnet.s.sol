@@ -58,6 +58,11 @@ contract DeployTestnet is Script {
         racks.mint(me, 69_420_000_000 ether); // start supply: 69,420,000,000 RACKS (melts from here)
         usdg.mint(me, 100_000 ether);
 
+        // SAFETY: the wRACKS wrapper must NEVER be melt-exempt (it would be a demurrage escape hatch).
+        // It may only be tax-exempt. Guarded here so a future edit can't silently break the economics.
+        require(!racks.isExempt(address(wracks)), "wrapper must melt");
+        racks.setTaxExempt(address(wracks), true);
+
         vm.stopBroadcast();
 
         console2.log("== external mocks ==");

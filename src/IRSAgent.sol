@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ReentrancyGuard} from "./ReentrancyGuard.sol";
 
-interface IERC20r { function transferFrom(address f, address t, uint256 a) external returns (bool); }
+interface IERC20r { function transferFrom(address f, address t, uint256 a) external returns (bool); function decimals() external view returns (uint8); }
 interface ICaymanPot {
     function potBalance() external view returns (uint256);
     function drawPot(address to, uint256 amount) external;
@@ -15,14 +15,14 @@ interface IVRFCoordinatorR { function requestRandom(address cb) external returns
 contract IRSAgent is ERC721, ReentrancyGuard {
     uint256 internal constant RAY = 1e27;
     uint256 public constant EPOCH = 8 hours;
-    uint256 public constant MINT_PRICE = 99e18;
+    uint256 public immutable MINT_PRICE; // 99 USDG, decimal-scaled in constructor
     uint256 public constant MAX_PER_WALLET = 10;
     uint256 public constant CAP = 10_000;
     uint256 public constant LIFE = 3 days;
 
     uint16[3] public HITRATE = [30, 50, 75];
     uint256[3] public WEIGHT = [4, 27, 144];
-    uint256[3] public FEED   = [10e18, 20e18, 30e18];
+    uint256[3] public FEED; // $10/$20/$30 in USDG, decimal-scaled in constructor
 
     IERC20r public immutable usdg;
     ICaymanPot public immutable vault;
@@ -59,6 +59,8 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     {
         usdg = IERC20r(_usdg); vault = ICaymanPot(_vault); vrf = IVRFCoordinatorR(_vrf);
         reserve = _reserve; admin = msg.sender; startTime = block.timestamp;
+        uint256 u = 10 ** usdg.decimals();
+        MINT_PRICE = 99 * u; FEED = [10 * u, 20 * u, 30 * u]; // decimal-aware
     }
 
     function currentEpoch() public view returns (uint32) {

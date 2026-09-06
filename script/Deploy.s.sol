@@ -52,6 +52,11 @@ contract Deploy is Script {
         // for distribution (LP, airdrop, presale). Adjust recipient/splits before mainnet.
         racks.mint(reserve, 69_420_000_000 ether);
 
+        // SAFETY: the wRACKS wrapper must NEVER be melt-exempt (it would be a demurrage escape hatch).
+        // It may only be tax-exempt. Guarded here so a future edit can't silently break the economics.
+        require(!racks.isExempt(address(wracks)), "wrapper must melt");
+        racks.setTaxExempt(address(wracks), true);
+
         vm.stopBroadcast();
 
         console2.log("RACKS   ", address(racks));

@@ -50,7 +50,7 @@ contract Racks {
 
     // launch guardrails (all keyed off enableTrading())
     uint256 public constant LAUNCH_WINDOW  = 1 hours;
-    uint256 public constant MAX_WALLET_BPS = 80;   // 0.8% of launch supply
+    uint256 public constant MAX_WALLET_BPS = 100;  // 1% of launch supply
     uint256 public constant LAUNCH_TAX_BPS = 800;  // 8% flat during the launch hour
     uint256 public tradingStart;                    // 0 until enableTrading()
     uint256 public launchSupply;

@@ -2,6 +2,9 @@
 pragma solidity ^0.8.20;
 
 contract MockERC20 {
+    uint8 public decimals = 18;
+    function setDecimals(uint8 d) external { decimals = d; }
+
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 

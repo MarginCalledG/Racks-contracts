@@ -27,7 +27,7 @@ contract LaunchTest is Test {
         k.setDex(pool, true);
         // supply lives in the pool (fair-launch: 100% in LP)
         k.mint(pool, 1_000_000 ether);
-        k.enableTrading(); // launchSupply = 1,000,000 -> maxWallet = 8,000
+        k.enableTrading(); // launchSupply = 1,000,000 -> maxWallet = 10,000 (1%)
     }
 
     function _buy(address who, uint256 amt) internal {
@@ -52,14 +52,14 @@ contract LaunchTest is Test {
 
     // max-wallet 0.8% blocks a too-large buy during launch
     function testMaxWalletBlocksLargeBuy() public {
-        // maxWallet = 8,000. A 10,000 buy delivers 9,200 (> 8,000) -> revert
+        // maxWallet = 10,000. A 12,000 buy delivers 11,040 (> 10,000) -> revert
         vm.prank(pool);
         vm.expectRevert(bytes("max wallet"));
-        k.transfer(alice, 10_000 ether);
+        k.transfer(alice, 12_000 ether);
     }
 
     function testMaxWalletAllowsSmallBuy() public {
-        _buy(alice, 8_000 ether); // delivers 7,360 < 8,000 -> ok
+        _buy(alice, 8_000 ether); // delivers 7,360 < 10,000 -> ok
         assertEq(k.balanceOf(alice), 7_360 ether);
     }
 
@@ -70,7 +70,7 @@ contract LaunchTest is Test {
         k.mint(carol, 20_000 ether);              // above maxWallet, but mint is not a buy -> allowed
         vm.prank(carol);
         k.transfer(dave, 20_000 ether);           // wallet-to-wallet is NOT limited
-        assertGt(k.balanceOf(dave), 8_000 ether); // dave exceeds maxWallet via w2w, no revert
+        assertGt(k.balanceOf(dave), 10_000 ether); // dave exceeds maxWallet via w2w, no revert
     }
 
     // limit lifts automatically after one hour

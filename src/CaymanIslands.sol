@@ -10,7 +10,7 @@ interface IRacks {
     function balanceOf(address a) external view returns (uint256);
     function setLockedSupply(uint256 L) external;
 }
-interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool); }
+interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool); function decimals() external view returns (uint8); }
 
 /// @title CaymanIslands (Stage 2) — 3-tier lock, 1:1 protection, short-lock bleed -> agent pot
 contract CaymanIslands is ReentrancyGuard {
@@ -27,7 +27,7 @@ contract CaymanIslands is ReentrancyGuard {
     address public agent;
 
     uint256[3] public DURATION = [uint256(1 days), 3 days, 14 days];
-    uint256[3] public FEE      = [uint256(3e18), 5e18, 10e18]; // USDG (18-dec assumed)
+    uint256[3] public FEE; // $3/$5/$10 in USDG, scaled to the token's decimals in the constructor
     uint256[3] public BLEED    = [B1, B3, RAY];
 
     uint256[3] public bIndex;
@@ -44,6 +44,8 @@ contract CaymanIslands is ReentrancyGuard {
 
     constructor(address _k, address _usdg, address _reserve) {
         racks = IRacks(_k); usdg = IERC20(_usdg); reserve = _reserve; owner = msg.sender;
+        uint256 u = 10 ** usdg.decimals();
+        FEE = [3 * u, 5 * u, 10 * u]; // decimal-aware: 6-dec USDG -> 3e6, 18-dec -> 3e18
         for (uint256 i; i < 3; i++) { bIndex[i] = RAY; bLast[i] = block.timestamp; }
     }
 
