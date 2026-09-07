@@ -10,6 +10,7 @@ interface ICaymanPot {
     function potLive() external view returns (uint256);
     function drawPot(address to, uint256 amount) external;
     function harvestBatch(uint256 from, uint256 count) external;
+    function activeCount() external view returns (uint256);
 }
 interface IVRFCoordinatorR { function requestRandom(address cb) external returns (uint256); }
 
@@ -49,6 +50,9 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     mapping(uint256 => mapping(uint32 => uint256)) public shares;
     uint256 public allocatedPot;
     uint256 public autoHarvest = 25; // positions harvested inside settle() (bounded gas); keepers page the rest
+    uint256 public harvestCursor;     // E4 fix: rotating start index so spam can't starve real positions
+    uint256 public constant SETTLE_GRACE = 10 minutes; // E1/E2 fix: let VRF results land before settling
+    mapping(uint32 => uint256) public pendingAttacks;   // unfulfilled attack requests per epoch
     mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
     uint32 public constant CLAIM_WINDOW = 90;          // epochs (~30 days) to claim before sweep
 
@@ -122,6 +126,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         uint32 e = currentEpoch();
         require(uint32(e + 1) > r.lastAtkEpoch1, "cooldown");
         r.lastAtkEpoch1 = e + 1;
+        pendingAttacks[e]++;
         uint256 rid = vrf.requestRandom(address(this));
         reqs[rid] = Req(2, id, e);
     }
@@ -138,6 +143,9 @@ contract IRSAgent is ERC721, ReentrancyGuard {
             agents[q.agentId].revealed = true;
             emit Revealed(q.agentId, tier);
         } else {
+            if (pendingAttacks[q.epoch] > 0) pendingAttacks[q.epoch]--;
+            // E1 fix: a result landing AFTER the epoch was settled must not mint phantom shares
+            if (settled[q.epoch]) { emit Attacked(q.agentId, q.epoch, false); return; }
             R storage rab = agents[q.agentId];
             bool hit = (word % 100) < HITRATE[rab.tier];
             if (hit) {
@@ -149,12 +157,23 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         }
     }
 
+    function epochEnd(uint32 e) public view returns (uint256) { return startTime + (uint256(e) + 1) * EPOCH; }
+
     function settle(uint32 e) public {
         require(e < currentEpoch(), "open");
+        // E2 fix: cannot settle until every attack's VRF result is in, or the grace period passed
+        require(pendingAttacks[e] == 0 || block.timestamp >= epochEnd(e) + SETTLE_GRACE, "results pending");
         if (settled[e]) return;
         settled[e] = true;
         if (totalShares[e] > 0) {
-            vault.harvestBatch(0, autoHarvest);      // book accrued bleed BEFORE reading the pot
+            // E4 fix: rotate the harvest window so every active position gets booked over time
+            uint256 n = vault.activeCount();
+            if (n > 0) {
+                uint256 start = harvestCursor % n;
+                vault.harvestBatch(start, autoHarvest);
+                if (start + autoHarvest < n) harvestCursor = start + autoHarvest;
+                else { vault.harvestBatch(0, start + autoHarvest - n); harvestCursor = 0; } // wrap around
+            }
             uint256 pot = vault.potBalance();
             uint256 prize = pot > allocatedPot ? pot - allocatedPot : 0;
             rewardPerShareRay[e] = prize * RAY / totalShares[e];

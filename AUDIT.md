@@ -70,6 +70,31 @@ Hinzufuegen zu Position. Ergebnis: keine Exploits.
 - Bekannte OPERATIVE Abhaengigkeit (kein Bug): der Pot waechst nur bei Abrechnung. Vor `settle(e)`
   der Agenten sollte ein Keeper aktive Kurz-Positionen harvesten, sonst ist der Epochen-Preis 0.
 
+## Runde 3 — Exploit-Muster aus der Praxis (test/ExploitsFromTheWild.t.sol)
+Recherchierte Angriffsklassen (Balancer Nov-2025 Rundungs-Exploit im exact-out-Pfad; Lotterie-
+Settlement-Timing und Rollback-/Prediction-Angriffe aus den arXiv-Taxonomien; ERC4626-Rest-
+Inflation) gegen unsere Contracts angewandt. ZWEI ECHTE LUECKEN gefunden, per PoC bewiesen, gefixt:
+
+**E1 — KRITISCH: Phantom-Share-Diebstahl ueber verspaetete VRF-Antwort.** Angreifer greift in der
+letzten Sekunde der Epoche an, settlet sofort nach Epochenende (vor seiner VRF-Antwort); die
+verspaetete Antwort schrieb 144 Shares in die bereits abgeschlossene Epoche -> Angreifer kassierte
+den GESAMTEN allozierten Pot beider Epochen (66.892 RACKS), ehrlicher Gewinner bekam 0.
+Fix: (a) `pendingAttacks[e]` — settle ist erst moeglich, wenn alle VRF-Ergebnisse der Epoche da sind
+ODER `SETTLE_GRACE` (10 min) verstrichen ist (haengende VRF kann settle nicht ewig blockieren);
+(b) ein Ergebnis, das NACH dem Settle landet, praegt keine Shares mehr.
+**E2 — Sofort-Settle-Griefing:** jeder konnte eine Epoche im Moment ihres Endes settlen -> Preis 0.
+Fix: derselbe Pending-/Grace-Gate.
+**E4 — Harvest-Aushungerung:** 30 Dust-Locks (1 wei, je $3) belegten die 25 Auto-Harvest-Plaetze
+-> echter Bleed nie gebucht -> Epochen-Preis 0. Fix: rotierender `harvestCursor` (jede Position
+wird ueber aufeinanderfolgende Settles gebucht) + `MIN_LOCK` = 1 RACKS.
+**E3 — Balancer-Klasse (Rundungs-Extraktion):** 300 krumm dosierte Wrap/Unwrap-Round-Trips im
+duennen Wrapper -> Angreifer endet nie reicher. Nicht verwundbar (Ist-Delta-Messung + floor).
+**E6 — ERC4626-Rest-Inflation nach toten Shares:** MINIMUM_LIQUIDITY von 1e3 auf 1e6 erhoeht ->
+eine 1M-RACKS-Spende blockiert nur noch Wraps < 1 RACKS (vorher < 1000), Opfer verlieren nie
+(Revert statt 0 Shares), Angreifer verbrennt ~seine ganze Spende. Unwirtschaftlich.
+Rollback-/Prediction-Angriffe auf den Zufall: strukturell ausgeschlossen (Ergebnis kommt in einer
+separaten VRF-Fulfill-TX, im Angriff-TX ist es unbekannt -> nichts zum Zurueckrollen).
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

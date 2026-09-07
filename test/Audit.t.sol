@@ -32,7 +32,7 @@ contract AuditFixes is Test {
     // W1: share-inflation attack is now unprofitable; victim gets fair shares
     function testFixed_ShareInflationBlocked() public {
         vm.startPrank(attacker);
-        IW(wa).wrap(2000);                                // first wrap: 1000 dead + 1000 to attacker
+        IW(wa).wrap(2_000_000);                           // first wrap: 1e6 dead + 1e6 to attacker
         k.transfer(wa, 1_000_000 ether);                  // donate to inflate
         vm.stopPrank();
         vm.prank(victim);

@@ -31,6 +31,7 @@ contract CaymanIslands is ReentrancyGuard {
     uint256[3] public DURATION = [uint256(1 days), 3 days, 14 days];
     uint256[3] public FEE;
     uint256[3] public BLEED = [B1, B3, RAY];
+    uint256 public constant MIN_LOCK = 1 ether; // E4: no 1-wei dust positions
 
     struct Pos { uint256 principal; uint64 lockedAt; uint64 unlockAt; } // lockedAt doubles as "last settled"
     mapping(address => Pos[3]) internal _pos;
@@ -143,7 +144,7 @@ contract CaymanIslands is ReentrancyGuard {
     }
 
     function lock(uint8 b, uint256 amount) external nonReentrant {
-        require(b < 3 && amount > 0, "bad");
+        require(b < 3 && amount >= MIN_LOCK, "bad");
         require(usdg.transferFrom(msg.sender, reserve, FEE[b]), "fee");
         _settle(msg.sender, b);                                // settle any existing position first
         uint256 beforeBal = racks.balanceOf(address(this));

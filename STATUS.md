@@ -103,7 +103,7 @@ justierbar) -> Epochen-Preis ist nicht 0, nur weil niemand geharvestet hat. Keep
 Fallback bei >25 aktiven Kurz-Positionen (paging via harvestBatch).
 FRONTEND: den Pot immer ueber potLive()/potPreview() anzeigen, NICHT ueber potBalance().
 
-## Security-Audit (2 Runden) -> siehe AUDIT.md — inkl. $18M Volumen-Stress, alles gruen
+## Security-Audit (3 Runden) -> siehe AUDIT.md — Runde 3: Exploit-Muster aus echten Hacks; 1 kritische Settlement-Luecke gefunden+gefixt
 1 kritischer (Share-Inflation im Wrapper, PoC-bewiesen), 4 mittlere, 5 niedrige Funde — alle gefixt,
 jeder mit Regressionstest (test/Audit.t.sol). Offene Design-Entscheidungen in AUDIT.md.
 

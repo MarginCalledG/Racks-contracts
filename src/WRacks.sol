@@ -29,7 +29,7 @@ contract WRacks is ERC20, ReentrancyGuard {
     uint256 public taxBps = 400;                    // 4% base; dynamic oracle wired in a later step
     uint256 public constant LAUNCH_TAX_BPS = 800;   // 8% during RACKS launch window
     uint256 public constant TAX_CAP = 800;          // 8% hard cap
-    uint256 public constant MINIMUM_LIQUIDITY = 1000; // dead shares (first-depositor protection)
+    uint256 public constant MINIMUM_LIQUIDITY = 1e6; // dead shares (first-depositor protection; 1e6 makes donation griefing 1000x weaker)
     address public constant DEAD_SHARES = 0x000000000000000000000000000000000000dEaD;
     address public taxOracle;                       // 0 = flat taxBps; else dynamic (spot vs TWAP)
 
