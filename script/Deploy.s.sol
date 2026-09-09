@@ -9,7 +9,7 @@ import {TwapOracle} from "../src/TwapOracle.sol";
 
 interface IV2Factory { function createPair(address,address) external returns (address); function getPair(address,address) external view returns (address); }
 interface IV2Router { function addLiquidity(address,address,uint256,uint256,uint256,uint256,address,uint256) external returns (uint256,uint256,uint256); }
-interface IERC20d { function approve(address,uint256) external returns (bool); function balanceOf(address) external view returns (uint256); }
+interface IERC20d { function approve(address,uint256) external returns (bool); function balanceOf(address) external view returns (uint256); function transfer(address,uint256) external returns (bool); }
 
 /// RACKS mainnet deploy — Uniswap v2 on Robinhood Chain. No wrapper, no hook.
 /// Ordering matters and is enforced by the checks below:
@@ -28,48 +28,70 @@ contract DeployScript is Script {
     uint256 constant SPY_SEED = 6.45 ether;          // ~$5k seed
     uint256 constant RAY      = 1e27;
 
+    struct Cfg { address me; address vrf; address reserve; address taxWallet; address multisig; address lpDestination; }
+
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
-        address me = vm.addr(pk);
-        address vrf      = vm.envAddress("VRF_COORDINATOR");   // see STATUS.md — VRF is still open on RH
-        address reserve  = vm.envAddress("RESERVE");           // multisig
-        address taxWallet= vm.envAddress("TAX_WALLET");
+        Cfg memory c = Cfg({
+            me: vm.addr(pk),
+            vrf: vm.envAddress("VRF_COORDINATOR"),      // see STATUS.md — VRF is still open on RH
+            reserve: vm.envAddress("RESERVE"),
+            taxWallet: vm.envAddress("TAX_WALLET"),
+            multisig: vm.envAddress("MULTISIG"),
+            lpDestination: vm.envAddress("LP_DESTINATION")  // 0x...dEaD burns the LP
+        });
 
         vm.startBroadcast(pk);
 
         // ---- 1. core ----
         Racks racks = new Racks(RAY / 1e6);
-        CaymanIslands vault = new CaymanIslands(address(racks), USDG, reserve);
-        IRSAgent agents = new IRSAgent(USDG, address(vault), vrf, reserve);
+        CaymanIslands vault = new CaymanIslands(address(racks), USDG, c.reserve);
+        // The agent casino stays PAUSED until a real randomness source exists on this chain.
+        // A codeless placeholder would brick mint(); a permissionless mock would hand the pot away.
+        IRSAgent agents = new IRSAgent(USDG, address(vault), c.vrf, c.reserve);
         vault.setAgent(address(agents));
         racks.setVault(address(vault));
         racks.setExempt(address(vault), true);      // locked RACKS must not lazy-melt
         racks.setTaxExempt(address(vault), true);
         racks.setTaxExempt(address(agents), true);
-        racks.setTaxWallet(taxWallet);
-        racks.setExempt(taxWallet, true);           // accrued tax must not melt away
-        racks.setTaxExempt(taxWallet, true);
-        racks.setTaxExempt(me, true);               // deployer seeds LP untaxed (and passes the gate)
+        racks.setTaxWallet(c.taxWallet);
+        racks.setExempt(c.taxWallet, true);           // accrued tax must not melt away
+        racks.setTaxExempt(c.taxWallet, true);
+        racks.setTaxExempt(c.me, true);               // deployer seeds LP untaxed (and passes the gate)
 
-        racks.mint(me, SUPPLY);
+        racks.mint(c.me, SUPPLY);
         racks.renounceMint();                       // supply is final
 
-        // ---- 2. pair + liquidity (trading gate still closed: only tax-exempt may move pool tokens) ----
+        // ---- 2. pair, REGISTERED BEFORE any liquidity ----
+        // P1: with --broadcast every call is its own transaction in its own block. If liquidity
+        // existed while the pair was not yet isDex, the N2 gate would not see it, tax would be 0 and
+        // the cap ledger off — exactly the PairCreated+Mint window sniper bots listen for.
+        // Registering first means every intermediate block is gate-protected.
         address pair = IV2Factory(FACTORY).getPair(address(racks), SPY);
         if (pair == address(0)) pair = IV2Factory(FACTORY).createPair(address(racks), SPY);
         racks.setExempt(pair, true);                // REQUIRED before setPair: pair holds a NOMINAL balance
-        IERC20d(address(racks)).approve(ROUTER, type(uint256).max);
-        IERC20d(SPY).approve(ROUTER, type(uint256).max);
-        require(IERC20d(SPY).balanceOf(me) >= SPY_SEED, "fund the deployer with SPY first");
-        IV2Router(ROUTER).addLiquidity(address(racks), SPY, SUPPLY, SPY_SEED, 0, 0, me, block.timestamp + 600);
-
-        // ---- 3. register the pair + dynamic tax oracle ----
-        racks.setPair(pair);                        // isDex + capExempt + pairIndex, enables atomic meltPool
+        racks.setPair(pair);                        // isDex + capExempt + pairIndex (pool still empty: melt = 0)
         TwapOracle oracle = new TwapOracle(pair, address(racks));
         racks.setTaxOracle(address(oracle));
 
-        // ---- 4. arm the launch LAST ----
+        // ---- 3. seed liquidity (gate is closed; only the tax-exempt deployer gets through) ----
+        IERC20d(address(racks)).approve(ROUTER, type(uint256).max);
+        IERC20d(SPY).approve(ROUTER, type(uint256).max);
+        require(IERC20d(SPY).balanceOf(c.me) >= SPY_SEED, "fund the deployer with SPY first");
+        IV2Router(ROUTER).addLiquidity(address(racks), SPY, SUPPLY, SPY_SEED, 0, 0, c.me, block.timestamp + 600);
+
+        // ---- 4. arm the launch ----
         racks.enableTrading();
+
+        // ---- 5. drop the deployer's powers ----
+        // LP tokens must not stay on a tax-exempt EOA: scanners flag "creator can pull liquidity",
+        // and a tax-exempt LP holder could run the melt-dodge for free. Send them to LP_DESTINATION
+        // (0x...dEaD to burn, or a locker/multisig).
+        uint256 lp = IERC20d(pair).balanceOf(c.me);
+        require(lp > 0, "no LP minted");
+        require(IERC20d(pair).transfer(c.lpDestination, lp), "lp move failed");
+        racks.setTaxExempt(c.me, false);              // deployer is now an ordinary trader
+        racks.transferOwnership(c.multisig);          // 2-step: multisig must acceptOwnership()
 
         vm.stopBroadcast();
 
@@ -78,11 +100,15 @@ contract DeployScript is Script {
         require(racks.pair() == pair && racks.pairIndex() != 0, "setPair missing");
         require(racks.isDex(pair), "pair not marked as dex");
         require(racks.capExempt(pair), "pair must be cap-exempt (it is the distributor)");
-        require(racks.isExempt(taxWallet), "tax wallet must be melt-exempt");
+        require(racks.isExempt(c.taxWallet), "tax wallet must be melt-exempt");
         require(racks.taxOracle() == address(oracle), "oracle not wired");
         require(racks.mintRenounced(), "mint not renounced");
         require(racks.tradingStart() != 0, "trading not enabled");
         require(racks.maxWallet() > 0, "launch cap not set");
+        require(IERC20d(pair).balanceOf(c.me) == 0, "deployer still holds LP");
+        require(!racks.isTaxExempt(c.me), "deployer still tax-exempt");
+        require(racks.pendingOwner() == c.multisig, "ownership handover not started");
+        require(agents.paused(), "agents must stay paused until VRF is real");
 
         deployedRacks = address(racks);
         console.log("RACKS   ", address(racks));
@@ -91,7 +117,9 @@ contract DeployScript is Script {
         console.log("Pair    ", pair);
         console.log("Oracle  ", address(oracle));
         console.log("maxWallet (1%)", racks.maxWallet());
-        console.log("HAND OVER: racks.transferOwnership(multisig) then acceptOwnership()");
-        console.log("AFTER LAUNCH: racks.renounceExemptControl() to close the exempt rug vector");
+        console.log("LP sent to  ", c.lpDestination);
+        console.log("NEXT: multisig calls racks.acceptOwnership()");
+        console.log("NEXT: agents stay PAUSED until a real VRF exists (agents.setPaused(false))");
+        console.log("LATER: racks.renounceExemptControl() - IRREVERSIBLE, blocks all future exemptions");
     }
 }

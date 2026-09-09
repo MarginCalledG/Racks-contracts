@@ -5,8 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
-import {WRacks} from "../src/WRacks.sol";
-import {TaxHook} from "../src/v4/TaxHook.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockVRF} from "./MockVRF.sol";
 
@@ -21,6 +19,7 @@ contract ExternalAuditFixes is Test {
         k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockVRF();
         v = new CaymanIslands(address(k), address(usdg), address(this));
         ag = new IRSAgent(address(usdg), address(v), address(vrf), address(this));
+        ag.setPaused(false);   // MockVRF has code; casino starts paused by default
         k.setVault(address(v)); k.setExempt(address(v), true); k.setTaxExempt(address(v), true);
         v.setAgent(address(ag)); k.setTaxExempt(address(ag), true);
         k.mint(locker, 10_000_000 ether); usdg.mint(locker, 1_000 ether);
@@ -69,28 +68,7 @@ contract ExternalAuditFixes is Test {
         assertApproxEqAbs(k.balanceOf(bob) - bb, bobPrize, 1e6, "bob paid in full");
     }
 
-    // F3 BLOCKED: cumulative ledger — the unwrap loop cannot exceed the cap in one wallet
-    function testF3_CumulativeLaunchCap() public {
-        WRacks w = new WRacks(address(k)); k.setTaxExempt(address(w), true); k.setWrapper(address(w));
-        address pool = address(0x9001); w.setCapExempt(pool, true);
-        k.mint(address(this), 1_000_000 ether); k.approve(address(w), type(uint256).max);
-        IW(address(w)).wrap(900_000 ether); IW(address(w)).transfer(pool, 800_000 ether);
-        k.enableTrading();                                                    // cap = 110,000
-        address sniper = address(0x5A1);
-        vm.prank(pool); IW(address(w)).transfer(sniper, 100_000 ether);      // 1st buy ok
-        uint256 bal = IW(address(w)).balanceOf(sniper); vm.prank(sniper); IW(address(w)).unwrap(bal);
-        vm.prank(pool); vm.expectRevert(bytes("max wallet")); IW(address(w)).transfer(sniper, 100_000 ether); // 2nd blocked
-        // transfer-away does not reset it either
-        vm.prank(sniper); k.transfer(address(0xA17), k.balanceOf(sniper));
-        vm.prank(pool); vm.expectRevert(bytes("max wallet")); IW(address(w)).transfer(sniper, 100_000 ether);
-        assertLe(k.launchReceived(sniper), k.maxWallet());
-    }
 
-    // F6 BLOCKED: codeless oracle rejected by the tax hook's setter
-    function testF6_CodelessOracleRejected() public {
-        TaxHook hook = new TaxHook(address(0x1), address(0x2), address(k), address(0x3));
-        vm.expectRevert(bytes("no code")); hook.setOracle(address(0xBEEF));
-    }
 
     // F7: expired dust is pruned from the active list; potLive can be paged
     function testF7_ExpiredDustPruned() public {

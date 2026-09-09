@@ -18,6 +18,7 @@ contract DecimalsTest is Test {
         usdg.setDecimals(dec);
         cay = new CaymanIslands(address(k), address(usdg), address(this));
         ag  = new IRSAgent(address(usdg), address(cay), address(new MockVRF()), address(this));
+        ag.setPaused(false);   // MockVRF has code; casino starts paused by default
     }
 
     // 6-decimal USDG (mainnet reality): $3 fee == 3_000_000, not 3e18

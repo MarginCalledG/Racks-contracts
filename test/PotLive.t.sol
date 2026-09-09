@@ -15,6 +15,7 @@ contract PotLiveTest is Test {
         k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockVRF();
         v = new CaymanIslands(address(k), address(usdg), address(this));
         ag = new IRSAgent(address(usdg), address(v), address(vrf), address(this));
+        ag.setPaused(false);   // MockVRF has code; casino starts paused by default
         k.setVault(address(v)); k.setExempt(address(v), true); k.setTaxExempt(address(v), true);
         v.setAgent(address(ag)); k.setTaxExempt(address(ag), true);
         k.mint(locker, 1_000_000 ether); usdg.mint(locker, 100 ether); usdg.mint(player, 1_000 ether);

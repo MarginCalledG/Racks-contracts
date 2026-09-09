@@ -53,6 +53,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     function settled(uint32 e) public view returns (bool) { return e < settledThrough || _settledMap[e]; }
     mapping(uint256 => mapping(uint32 => uint256)) public shares;
     uint256 public allocatedPot;
+    bool public paused = true;   // casino starts PAUSED until a real randomness source is wired
     uint256 public autoHarvest = 25; // positions harvested inside settle() (bounded gas); keepers page the rest
     uint256 public harvestCursor;     // E4 fix: rotating start index so spam can't starve real positions
     uint32 public settledThrough;     // F1: every epoch < settledThrough is settled
@@ -96,6 +97,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     }
 
     function mint() external nonReentrant returns (uint256 id) {
+        require(!paused, "paused");
         require(ownedLiving[msg.sender] < MAX_PER_WALLET, "wallet cap");
         require(livingCount < CAP, "cap");
         require(usdg.transferFrom(msg.sender, reserve, MINT_PRICE), "pay");
@@ -125,6 +127,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     }
 
     function attack(uint256 id) external nonReentrant {
+        require(!paused, "paused");
         require(ownerOf(id) == msg.sender, "!owner");
         require(alive(id), "dead");
         R storage r = agents[id];
@@ -235,6 +238,11 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         allocatedPot = allocatedPot > left ? allocatedPot - left : 0; // released back into potBalance
     }
 
+    /// unpause only once a real VRF is wired; refuses a codeless placeholder outright
+    function setPaused(bool p_) external onlyAdmin {
+        if (!p_) require(address(vrf).code.length > 0, "vrf has no code");
+        paused = p_;
+    }
     function setAutoHarvest(uint256 n) external onlyAdmin { autoHarvest = n; }
     /// what the next epoch will realistically pay from (for UIs)
     function potPreview() external view returns (uint256) { return vault.potLive(); }

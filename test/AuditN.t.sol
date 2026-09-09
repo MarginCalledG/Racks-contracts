@@ -69,6 +69,7 @@ contract AuditN is Test {
         MockERC20 usdg = new MockERC20(); MockVRF vrf = new MockVRF();
         CaymanIslands v = new CaymanIslands(address(k), address(usdg), address(this));
         IRSAgent ag = new IRSAgent(address(usdg), address(v), address(vrf), address(this));
+        ag.setPaused(false);   // MockVRF has code; casino starts paused by default
         v.setAgent(address(ag));
         vm.warp(block.timestamp + 3000 * 8 hours);        // ~2.7 years of empty epochs
         uint32 e = ag.currentEpoch() - 1;

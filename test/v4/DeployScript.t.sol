@@ -21,6 +21,8 @@ contract DeployScriptTest is Test {
         vm.setEnv("VRF_COORDINATOR", vm.toString(address(0xF00D)));
         vm.setEnv("RESERVE", vm.toString(address(0x8E5E)));
         vm.setEnv("TAX_WALLET", vm.toString(address(0x7A11)));
+        vm.setEnv("MULTISIG", vm.toString(address(0x11115)));
+        vm.setEnv("LP_DESTINATION", vm.toString(address(0x000000000000000000000000000000000000dEaD)));
 
         DeployScript d = new DeployScript();
         d.run();                        // all self-checks inside must pass
@@ -61,5 +63,8 @@ contract DeployScriptTest is Test {
         vm.stopPrank();
         assertGt(IERC20t(SPY).balanceOf(buyer), spyBefore, "sell works after an unsynced epoch");
         emit log("buy + sell across a melt epoch on the freshly deployed pair: OK");
+        // deployer must be fully de-privileged by the script itself
+        assertFalse(k.isTaxExempt(me), "deployer still tax-exempt");
+        assertEq(k.pendingOwner(), address(0x11115), "ownership handover pending");
     }
 }

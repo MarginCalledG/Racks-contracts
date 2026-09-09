@@ -29,6 +29,7 @@ contract IntegrationTest is Test {
         racks = new Racks(RAY / 1e6);
         vault = new CaymanIslands(address(racks), address(usdg), reserve);
         agents = new IRSAgent(address(usdg), address(vault), address(vrf), reserve);
+        agents.setPaused(false);   // MockVRF has code; casino starts paused by default
         pair.setTokens(address(racks), address(spy));
         twap = new TwapOracle(address(pair), address(racks));
         swapper = new TaxSwapper(address(racks), address(spy), address(router), address(price), reserve, 1000 ether, 300);

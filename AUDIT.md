@@ -208,6 +208,35 @@ einem aelteren Zip; die Datei war hier bereits geloescht.
   wirklich uebernehmen sollen, braucht es einen absoluten Mindestbetrag (bewusst als LP-Kosten).
   Aktuell traegt die Self-Heal-Logik in _preOp den Loewenanteil.
 
+## Runde 8 — Deploy-Audit (P-Serie) — test/v4/DeployWindow.t.sol
+**P1 (hoch, BESTAETIGT) — offenes Fenster zwischen addLiquidity und setPair.** Mit --broadcast ist
+jeder Call eine eigene TX in einem eigenen Block. Mit vm.roll nachgestellt: in dem Fenster ist das
+Pair nicht isDex -> Gate blind, Tax 0, Cap-Ledger aus. PoC: Sniper nahm **13.38% der Supply, null
+Tax, launchReceived 0**. Mein alter Fork-Test konnte das nicht sehen, weil er das Skript in EINER
+Test-TX ausfuehrte. Fix: `setPair` (und Orakel) VOR `addLiquidity`; der Deployer ist tax-exempt und
+passiert das Gate, pairIndex wird auf leerem Pool gesetzt (erster Melt rechnet korrekt). Beide
+Ordnungen sind als Tests hinterlegt (P1 = alte Reihenfolge bricht, P1b = neue haelt).
+**VRF-Platzhalter (BESTAETIGT als reales Risiko).** IRSAgent startet jetzt `paused = true`;
+`setPaused(false)` verlangt `vrf.code.length > 0`, ein codeloser Platzhalter laesst sich also gar
+nicht scharfschalten. Ein permissionless Mock bliebe gefaehrlich — deshalb Deploy-Selbstcheck
+`require(agents.paused())`.
+**LP-Handling (BESTAETIGT).** LP lag beim dauerhaft tax-exempten Deployer: Scanner melden "creator
+can pull liquidity", und der Melt-Dodge waere fuer ihn gratis. Skript sendet die LP jetzt an
+`LP_DESTINATION` (0x...dEaD = burn), setzt `setTaxExempt(deployer, false)` und startet die
+Ownership-Uebergabe an die Multisig. Selbstchecks: Deployer haelt keine LP, ist nicht mehr
+tax-exempt, pendingOwner == Multisig.
+**Repo-Drift (BEHOBEN).** Tote v4-Schicht entfernt: src/v4/*, src/WRacks.sol und alle zugehoerigen
+Tests (inkl. der vom Auditor genannten WRacksTax/V2EndToEnd/RacksOnRealV2/RacksDirectInPool),
+DeployTestnet.s.sol. Wrapper-spezifische Regressionen (W1, E3, E6, F3-Wrapper, F6-Hook) sind mit dem
+Wrapper gegenstandslos und entfernt; die Token-Ebene-Regressionen bleiben. Clean-Clone-Build
+verifiziert: 94 Tests gruen, 14 Fork-Tests gruen, keine Altlasten.
+Niedrig, dokumentiert statt gefixt: tx.origin-Ledger teilt sich bei AA-Bundlern ein Cap (auf RH
+heute nicht relevant); `renounceExemptControl` ist irreversibel und blockiert auch kuenftig noetige
+Exemptions; `activeEpochs` waechst ~1.100 Eintraege/Jahr (Cursor-basiert, unkritisch).
+**OFFEN (Owner):** Pot-Seed. Das Skript schickt 100% der Supply in den Pool -> Casino startet mit
+Pot 0. Wenn am Launch geraidet werden soll, braucht es Supply-Reserve fuer `fundPot` oder frueh
+Kurz-Locker. Widerspricht der bisherigen Doku und ist bewusst zu entscheiden.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

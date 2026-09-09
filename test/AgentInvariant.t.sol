@@ -13,7 +13,8 @@ contract AgentHandler is Test {
     constructor() {
         k = new Racks(1e27 / 1e6); usdg = new MockERC20();
         vault = new CaymanIslands(address(k), address(usdg), address(0xFEE));
-        agent = new IRSAgent(address(usdg), address(vault), address(this), address(0xFEE)); // vrf = this
+        agent = new IRSAgent(address(usdg), address(vault), address(this), address(0xFEE));
+        // unpaused from setUp: during this constructor the handler has no code yet
         k.setExempt(address(vault), true); k.setVault(address(vault)); k.setTaxExempt(address(vault), true);
         vault.setAgent(address(agent));
         users.push(address(0x1)); users.push(address(0x2));
@@ -26,6 +27,8 @@ contract AgentHandler is Test {
         vm.prank(users[0]); vault.lock(0, 500_000 ether); // pot source
     }
     // VRF coordinator role: synchronous pseudo-random fulfillment
+    function unpause() external { agent.setPaused(false); }
+
     function requestRandom(address cb) external returns (uint256 id) {
         id = ++seed;
         IRSAgent(cb).rawFulfill(id, uint256(keccak256(abi.encode(seed, block.timestamp, cb))));
@@ -53,7 +56,7 @@ contract AgentHandler is Test {
 
 contract AgentInvariant is Test {
     AgentHandler h; IRSAgent agent; CaymanIslands vault;
-    function setUp() public { h = new AgentHandler(); agent = h.agent(); vault = h.vault(); targetContract(address(h)); }
+    function setUp() public { h = new AgentHandler(); h.unpause(); agent = h.agent(); vault = h.vault(); targetContract(address(h)); }
     /// never reserve more prize than the pot actually holds
     function invariant_allocatedLeqPot() public view { assertLe(agent.allocatedPot(), vault.potBalance()); }
     /// vault stays solvent for its vaults even as agents drain the pot

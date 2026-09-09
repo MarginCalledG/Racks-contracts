@@ -27,6 +27,7 @@ contract AgentTest is Test {
         vrf = new MockVRF();
         vault = new CaymanIslands(address(k), address(usdg), reserve);
         agent = new IRSAgent(address(usdg), address(vault), address(vrf), reserve);
+        agent.setPaused(false);   // MockVRF has code; casino starts paused by default
 
         k.setExempt(address(vault), true);
         k.setVault(address(vault));

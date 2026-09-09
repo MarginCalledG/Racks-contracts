@@ -39,13 +39,16 @@ ueber TwapOracle (jetzt auf dem echten v2-Pair-Interface: getReserves/token0).
 Ohne Orakel greift BASE_TAX_BPS = 400 statt 0 (eine fehlende Quelle darf die Tax nie abschalten).
 USDG-Weg existiert auf v2: USDG->SPY->RACKS in einer TX ueber den Standard-Router, kein Zap noetig.
 
-### Deploy (script/Deploy.s.sol — NEU auf v2, gegen RH-Fork getestet)
-Reihenfolge ist zwingend und wird per require geprueft:
+### Deploy (script/Deploy.s.sol — v2, gegen RH-Fork getestet)
+Reihenfolge ist zwingend und wird per require geprueft. Jeder Schritt ist unter --broadcast eine
+eigene TX in einem eigenen Block — deshalb muss JEDES Zwischenfenster gate-geschuetzt sein:
 1. Token/Vault/Agents + Wiring, mint, renounceMint
-2. Pair anlegen, `setExempt(pair)` (Pflicht vor setPair), Liquiditaet seeden — das Trading-Gate ist
-   noch zu, nur tax-exempte Adressen (Deployer) duerfen Pool-Token bewegen
-3. `setPair(pair)` (setzt isDex + capExempt + pairIndex) + TwapOracle
-4. `enableTrading()` ZULETZT -> Launch-Stunde startet
+2. Pair anlegen, `setExempt(pair)`, dann SOFORT `setPair(pair)` + TwapOracle — VOR jeder Liquiditaet
+   (sonst existiert ein Block, in dem der Pool handelbar, aber ungegatet und steuerfrei ist)
+3. Liquiditaet seeden (Gate zu; nur der tax-exempte Deployer kommt durch)
+4. `enableTrading()` -> Launch-Stunde startet
+5. LP an LP_DESTINATION (0x...dEaD = burn), `setTaxExempt(deployer,false)`, `transferOwnership(multisig)`
+Env: PRIVATE_KEY, VRF_COORDINATOR, RESERVE, TAX_WALLET, MULTISIG, LP_DESTINATION
 Selbstchecks am Ende: Pair melt-exempt, setPair gesetzt, isDex, capExempt, Tax-Wallet melt-exempt,
 Orakel verdrahtet, Mint renounced, Trading an, maxWallet > 0.
 Fork-Test test/v4/DeployScript.t.sol fuehrt das echte Skript aus und handelt danach: Kauf in der
@@ -54,9 +57,14 @@ ohne Keeper OK.
 NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `renounceExemptControl()`.
 
 ## OFFEN
-1. v4-Schicht aus dem Repo entfernen (Contracts + Tests), sobald v2 final bestaetigt ist.
-3. VRF: Chainlink VRF laeuft NICHT auf RH (nur Data Feeds/Streams/CCIP). Empfehlung: EIN Zufalls-Seed
-   pro Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die
-   ganze Klasse der VRF-Timing-Exploits. Entscheidung offen.
+1. Repo: v4-Schicht ist ENTFERNT (Clean-Clone-Build gruen). Auf GitHub per git rm nachziehen —
+   'Add files via upload' loescht nichts.
+3. VRF: Chainlink VRF laeuft NICHT auf RH (nur Data Feeds/Streams/CCIP). IRSAgent startet deshalb
+   `paused = true`; `setPaused(false)` verlangt einen VRF mit Code. Empfehlung: EIN Zufalls-Seed pro
+   Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die
+   ganze Klasse der VRF-Timing-Exploits. Entscheidung offen — bis dahin bleibt das Casino aus.
+6. Pot-Seed entscheiden: aktuell gehen 100% der Supply in den Pool, das Casino startet mit Pot 0.
+7. renounceExemptControl ist IRREVERSIBEL — danach sind auch noetige Exemptions (neue Vault-Version,
+   neue Tax-Wallet) unmoeglich. Bewusst erst nach dem Launch und nach Abwaegung aufrufen.
 4. Externes Audit vor Mainnet.
 5. Frontend-Konstanten an die Contracts angleichen (siehe AUDIT.md).
