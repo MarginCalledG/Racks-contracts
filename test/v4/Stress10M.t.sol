@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {HookedBase} from "./HookedBase.sol";
+import {TaxHook} from "../../src/v4/TaxHook.sol";
 import {V4Swap, PoolKey, Currency, IERC20x} from "../../src/v4/V4Swap.sol";
 import {V4Pool} from "../../src/v4/V4Pool.sol";
 import {Zap} from "../../src/v4/Zap.sol";
@@ -13,7 +15,7 @@ interface IW { function wrap(uint256) external returns (uint256); function appro
 
 /// $10M volume stress on the wRACKS/SPY pool (fork): launch-window load, giant trades,
 /// sustained one-way pressure, conservation, tax band, pool stays functional.
-contract Stress10M is Test {
+contract Stress10M is HookedBase {
     address constant SPY  = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant PM   = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -38,7 +40,8 @@ contract Stress10M is Test {
         // 1 SPY = 1000 wRACKS; ~2000 SPY (~$1.5M) deep
         uint256 pC1overC0 = wIsC0 ? 1e15 : 1e21;
         uint160 sqrtP = uint160(_isqrt(pC1overC0) * (uint256(1) << 96) / 1e9);
-        wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(0));
+        TaxHook hook = _deployHook(PM, wa, address(k), taxWallet);
+        wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(hook));
         spyUsdg = PoolKey(Currency.wrap(SPY), Currency.wrap(USDG), 3000, 60, address(0));
         pool = new V4Pool(PM); pool.initialize(wrSpy, sqrtP);
         w.setCapExempt(PM, true); w.setCapExempt(address(pool), true);
@@ -46,8 +49,9 @@ contract Stress10M is Test {
         pool.addLiquidity(wrSpy, -887220, 887220, int256(63_000 ether)); // ~2000 SPY / ~2M wRACKS
         sw = new V4Swap(PM); w.setCapExempt(address(sw), true);
         oracle = new TwapOracleV4(SV, keccak256(abi.encode(wrSpy)), wIsC0);
-        w.setTaxOracle(address(oracle)); w.setTaxWallet(taxWallet);
+        hook.setOracle(address(oracle));
         zap = new Zap(address(sw), wa, address(k), USDG, SPY, QUOTER, spyUsdg, wrSpy);
+        k.setWrapper(wa); k.setCapExempt(address(zap), true); // F3 ledger wiring (REQUIRED)
         w.setCapExempt(address(zap), true);
         for (uint i; i < 20; i++) {
             W[i] = address(uint160(0x2000 + i)); deal(USDG, W[i], 5_000_000e6);
@@ -98,7 +102,8 @@ contract Stress10M is Test {
 
         // ---- REPORT ----
         emit log_named_uint("TOTAL VOLUME (USDG, 1e6)", vol);
-        emit log_named_uint("tax collected (RACKS)", k.balanceOf(taxWallet));
+        emit log_named_uint("tax collected wRACKS (buys)", IERC20x(wa).balanceOf(taxWallet));
+        emit log_named_uint("tax collected SPY (sells)", IERC20x(SPY).balanceOf(taxWallet));
         emit log_named_uint("tax band seen: min bps", minTax); emit log_named_uint("tax band seen: max bps", maxTax);
         emit log_named_uint("spot after one-way buys", spotAfterBuys); emit log_named_uint("spot after one-way sells", spotAfterSells);
         emit log_named_uint("pool wRACKS", IERC20x(wa).balanceOf(PM));

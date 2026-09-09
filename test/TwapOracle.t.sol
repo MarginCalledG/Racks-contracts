@@ -10,9 +10,9 @@ contract TwapOracleTest is Test {
     MockPair pair;
 
     function setUp() public {
-        pair = new MockPair();
+        pair = new MockPair(); pair.setTokens(address(0x1), address(0x2));
         pair.set(1_000_000 ether, 500_000 ether); // spot = 0.5 SPY/RACKS
-        o = new TwapOracle(address(pair));
+        o = new TwapOracle(address(pair), address(0x1));
         _fill(); // build 15+ min of history at 0.5
     }
 

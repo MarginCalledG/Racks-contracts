@@ -51,6 +51,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     uint256 public allocatedPot;
     uint256 public autoHarvest = 25; // positions harvested inside settle() (bounded gas); keepers page the rest
     uint256 public harvestCursor;     // E4 fix: rotating start index so spam can't starve real positions
+    uint32 public settledThrough;     // F1: every epoch < settledThrough is settled
     uint256 public constant SETTLE_GRACE = 10 minutes; // E1/E2 fix: let VRF results land before settling
     mapping(uint32 => uint256) public pendingAttacks;   // unfulfilled attack requests per epoch
     mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
@@ -86,7 +87,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         from = super._update(to, tokenId, auth);
         if (!agents[tokenId].dead) {
             if (from != address(0)) ownedLiving[from]--;
-            if (to != address(0)) ownedLiving[to]++;
+            if (to != address(0)) { ownedLiving[to]++; require(ownedLiving[to] <= MAX_PER_WALLET, "max agents"); } // F8
         }
     }
 
@@ -112,7 +113,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     function reap(uint256 id) external {
         R storage r = agents[id];
-        require(r.revealed && !r.dead, "n/a");
+        require(!r.dead, "n/a");                                       // F9: unrevealed zombies reapable too
         require(block.timestamp > uint256(r.lastFed) + LIFE, "alive");
         r.dead = true;
         livingCount--;
@@ -161,10 +162,18 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     function settle(uint32 e) public {
         require(e < currentEpoch(), "open");
+        // F1: strictly in order. Empty predecessor epochs (no shares, nothing pending) auto-settle;
+        // an epoch with winners must be settled explicitly before any later one.
+        for (uint32 x = settledThrough; x < e; x++) {
+            if (settled[x]) continue;
+            require(totalShares[x] == 0 && pendingAttacks[x] == 0, "prev");
+            settled[x] = true;
+        }
         // E2 fix: cannot settle until every attack's VRF result is in, or the grace period passed
         require(pendingAttacks[e] == 0 || block.timestamp >= epochEnd(e) + SETTLE_GRACE, "results pending");
         if (settled[e]) return;
         settled[e] = true;
+        if (e + 1 > settledThrough) settledThrough = e + 1;
         if (totalShares[e] > 0) {
             // E4 fix: rotate the harvest window so every active position gets booked over time
             uint256 n = vault.activeCount();
@@ -189,9 +198,11 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         require(w > 0, "nothing");
         shares[id][e] = 0;
         uint256 payout = w * rewardPerShareRay[e] / RAY;
+        if (payout > epochUnclaimed[e]) payout = epochUnclaimed[e];   // F2: never pay from other epochs / swept epochs
+        require(payout > 0, "empty");
         if (payout > allocatedPot) payout = allocatedPot;
         allocatedPot -= payout;
-        epochUnclaimed[e] = epochUnclaimed[e] > payout ? epochUnclaimed[e] - payout : 0;
+        epochUnclaimed[e] -= payout;
         vault.drawPot(msg.sender, payout);
         emit Claimed(id, e, payout);
     }

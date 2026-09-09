@@ -4,6 +4,8 @@ pragma solidity ^0.8.20;
 import {RayMath} from "./RayMath.sol";
 import {ReentrancyGuard} from "./ReentrancyGuard.sol";
 
+interface IPairSync { function sync() external; }
+
 interface ITaxOracle {
     function update() external;
     function taxBps(uint256 amount, bool isSell) external view returns (uint256);
@@ -52,11 +54,28 @@ contract Racks is ReentrancyGuard {
     // launch guardrails (all keyed off enableTrading())
     uint256 public constant LAUNCH_WINDOW  = 1 hours;
     uint256 public constant MAX_WALLET_BPS = 100;  // 1% of launch supply
-    uint256 public constant LAUNCH_TAX_BPS = 800;  // 8% flat during the launch hour
+    uint256 public constant LAUNCH_TAX_BPS = 800;
+    uint256 public constant BASE_TAX_BPS   = 400;   // fallback when no oracle is wired  // 8% flat during the launch hour
     uint256 public tradingStart;                    // 0 until enableTrading()
     uint256 public launchSupply;
     uint256 public maxWallet;
     bool public mintRenounced;
+
+    // F3: cumulative launch-window receipts per wallet (never decreases) -> the cap is a running total,
+    // not a balance snapshot, so unwrap/transfer-away loops cannot reset it. One ledger for RACKS and
+    // wRACKS receipts (the wrapper reports its deliveries here).
+    mapping(address => uint256) public launchReceived;
+    mapping(address => bool) public capExempt;   // routers/infra that hold tokens transiently
+
+    // ---- pool melt (v2) ----
+    // The pair is melt-EXEMPT (nominal balance, no lazy melt). Its melt is applied explicitly and
+    // atomically together with pair.sync(), so reserves and balance are never out of step and a
+    // swap can never hit "UniswapV2: K".
+    address public pair;
+    uint256 public pairIndex;                       // index at which the pair was last melted
+    uint256 public constant MELT_BOUNTY_BPS = 25;   // 0.25% of the pool melt to whoever calls it
+    address public wrapper;
+    bool public exemptControlRenounced;
 
     address public owner;
     address public vault;
@@ -112,6 +131,11 @@ contract Racks is ReentrancyGuard {
     function _preOp() internal returns (uint256 dt) {
         uint256 e = epochNow();
         if (e > checkpointEpoch) { indexCheckpoint = index(); checkpointEpoch = e; }
+        // keep the pool in step. Runs BEFORE any credit in _move, so a sell's incoming tokens are
+        // not yet in the pair when it syncs (otherwise the router would compute amountIn == 0).
+        // A locked pair (we are inside a swap) makes this revert; the catch rolls it back untouched.
+        address p = pair;
+        if (p != address(0) && index() < pairIndex) { try this.meltPool() {} catch {} }
         dt = block.timestamp - lastUpdate;
         lastUpdate = block.timestamp;
     }
@@ -175,9 +199,10 @@ contract Racks is ReentrancyGuard {
         if (!sell && !buy) return 0;                        // wallet<->wallet: no tax
         if (isTaxExempt[from] || isTaxExempt[to]) return 0; // system contracts exempt
         if (inLaunchWindow()) return LAUNCH_TAX_BPS;        // flat 8% during launch hour
-        if (taxOracle == address(0)) return 0;
-        ITaxOracle(taxOracle).update();                     // advance TWAP accumulator on the trade
-        return ITaxOracle(taxOracle).taxBps(amount, sell);
+        if (taxOracle == address(0) || taxOracle.code.length == 0) return BASE_TAX_BPS; // no/broken oracle: flat base, never 0
+        try ITaxOracle(taxOracle).update() {} catch {}      // advance TWAP accumulator on the trade
+        try ITaxOracle(taxOracle).taxBps(amount, sell) returns (uint256 b) { return b > LAUNCH_TAX_BPS ? LAUNCH_TAX_BPS : b; }
+        catch { return BASE_TAX_BPS; }
     }
 
     function _move(address from, address to, uint256 amount) internal {
@@ -189,10 +214,10 @@ contract Racks is ReentrancyGuard {
         uint256 tax = removed * bps / 10000;
         if (tax > 0) { _credit(taxWallet, tax); emit Transfer(from, taxWallet, tax); }
         _credit(to, removed - tax);
-        // launch anti-snipe: cap BUYS (pool -> wallet) per wallet during the first hour
-        if (inLaunchWindow() && isDex[from] && !isDex[to] && !isExempt[to] && !isTaxExempt[to]) {
-            require(balanceOf(to) <= maxWallet, "max wallet");
-        }
+        // F3: launch anti-snipe as a cumulative running total of what a wallet ACQUIRES from a
+        // router (zap). Peer transfers move already-counted tokens and stay uncapped; moving tokens
+        // away never lowers the acquirer's total, so the buy->transfer->buy loop is closed.
+        if (capExempt[from]) _recordLaunch(to, removed - tax);
         _postOp(dt);
         emit Transfer(from, to, removed - tax);
     }
@@ -251,6 +276,52 @@ contract Racks is ReentrancyGuard {
     function acceptOwnership() external { require(msg.sender == pendingOwner, "!pending"); owner = pendingOwner; pendingOwner = address(0); }
 
     function setVault(address l) external onlyOwner { vault = l; }
+    function setWrapper(address w) external onlyOwner { wrapper = w; }
+
+    /// register the v2 pair. It MUST already be melt-exempt (setExempt) so its balance is nominal.
+    function setPair(address p) external onlyOwner {
+        require(isExempt[p], "pair not melt-exempt");
+        pair = p; isDex[p] = true; capExempt[p] = true;
+        pairIndex = index();
+    }
+
+    /// Permissionless: apply the pool's accrued melt and sync the pair ATOMICALLY.
+    /// Deliberately NOT nonReentrant — it is called as an external self-call from _preOp so that a
+    /// locked pair (mid-swap) rolls the whole thing back instead of leaving melt un-synced.
+    function meltPool() public {
+        address p = pair;
+        require(p != address(0), "no pair");
+        uint256 e = epochNow();
+        if (e > checkpointEpoch) { indexCheckpoint = index(); checkpointEpoch = e; }
+        uint256 idx = index();
+        uint256 pi = pairIndex;
+        if (pi != 0 && idx < pi) {
+            uint256 bal = _nominal[p];
+            uint256 melt = bal - bal * idx / pi;
+            if (melt > 0) {
+                // no bounty for the internal self-call; only external callers earn it
+                uint256 bounty = msg.sender == address(this) ? 0 : melt * MELT_BOUNTY_BPS / 10000;
+                _nominal[p] = bal - melt;
+                _totalNominalExempt -= melt;
+                if (bounty > 0) { _credit(msg.sender, bounty); emit Transfer(p, msg.sender, bounty); }
+                emit Transfer(p, address(0), melt - bounty);
+            }
+            pairIndex = idx;
+        }
+        IPairSync(p).sync();   // atomic with the melt above; reverts everything if the pair is locked
+    }
+    function setCapExempt(address a, bool e) external onlyOwner { capExempt[a] = e; }
+    /// permanently give up the power to (un)exempt addresses from melt (the main owner rug vector)
+    function renounceExemptControl() external onlyOwner { exemptControlRenounced = true; }
+
+    function _recordLaunch(address to, uint256 v) internal {
+        if (!inLaunchWindow() || v == 0) return;
+        if (capExempt[to] || isExempt[to] || isTaxExempt[to]) return;
+        launchReceived[to] += v;
+        require(launchReceived[to] <= maxWallet, "max wallet");
+    }
+    /// the wrapper reports wRACKS deliveries (in RACKS value) so pool buys count against the same cap
+    function recordLaunchReceipt(address to, uint256 v) external { require(msg.sender == wrapper, "!wrapper"); _recordLaunch(to, v); }
     function enableTrading() external onlyOwner {
         require(tradingStart == 0, "started");
         tradingStart = block.timestamp;

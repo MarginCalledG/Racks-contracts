@@ -38,7 +38,7 @@ contract DeployTestnet is Script {
         Racks racks          = new Racks(1e27 / 1e6);
         CaymanIslands vault  = new CaymanIslands(address(racks), address(usdg), me);
         IRSAgent agents      = new IRSAgent(address(usdg), address(vault), address(vrf), me);
-        TwapOracle twap      = new TwapOracle(address(pair));
+        TwapOracle twap      = new TwapOracle(address(pair), address(racks));
         TaxSwapper swapper   = new TaxSwapper(address(racks), address(spy), address(router), address(price), me, 1000 ether, 300);
         WRacks wracks        = new WRacks(address(racks));
 

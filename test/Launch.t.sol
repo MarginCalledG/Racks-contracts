@@ -25,6 +25,7 @@ contract LaunchTest is Test {
         k.setTaxExempt(taxWallet, true);
         k.setTaxOracle(address(oracle));
         k.setDex(pool, true);
+        k.setCapExempt(pool, true); // pool is a distributor: its deliveries count as acquisitions
         // supply lives in the pool (fair-launch: 100% in LP)
         k.mint(pool, 1_000_000 ether);
         k.enableTrading(); // launchSupply = 1,000,000 -> maxWallet = 10,000 (1%)

@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {HookedBase} from "./HookedBase.sol";
+import {TaxHook} from "../../src/v4/TaxHook.sol";
 import {V4Swap, PoolKey, Currency, IERC20x} from "../../src/v4/V4Swap.sol";
 import {V4Pool} from "../../src/v4/V4Pool.sol";
 import {Zap} from "../../src/v4/Zap.sol";
@@ -11,7 +13,7 @@ import {WRacks} from "../../src/WRacks.sol";
 
 interface IW { function wrap(uint256) external returns (uint256); function approve(address,uint256) external returns (bool); }
 
-contract LaunchCapTest is Test {
+contract LaunchCapTest is HookedBase {
     address constant SPY = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant PM  = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -38,7 +40,8 @@ contract LaunchCapTest is Test {
         // price 1 SPY = 1,000,000 wRACKS  (wRACKS very cheap -> tiny SPY depth sells the whole cap)
         uint256 pC1overC0 = wIsC0 ? 1e15 : 1e21;          // 1 SPY = 1000 wRACKS
         uint160 sqrtP = uint160(_isqrt(pC1overC0) * (uint256(1) << 96) / 1e9);
-        PoolKey memory wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(0));
+        TaxHook hook = _deployHook(PM, wa, address(k), taxWallet);
+        PoolKey memory wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(hook));
         PoolKey memory spyUsdg = PoolKey(Currency.wrap(SPY), Currency.wrap(USDG), 3000, 60, address(0));
         V4Pool pool = new V4Pool(PM); pool.initialize(wrSpy, sqrtP);
         IERC20x(wa).approve(address(pool), type(uint256).max);
@@ -48,8 +51,9 @@ contract LaunchCapTest is Test {
         w.setCapExempt(PM, true); w.setCapExempt(address(pool), true);
         sw = new V4Swap(PM); w.setCapExempt(address(sw), true);
         TwapOracleV4 oracle = new TwapOracleV4(SV, keccak256(abi.encode(wrSpy)), wIsC0);
-        w.setTaxOracle(address(oracle)); w.setTaxWallet(taxWallet);
+        hook.setOracle(address(oracle));
         zap = new Zap(address(sw), wa, address(k), USDG, SPY, QUOTER, spyUsdg, wrSpy);
+        k.setWrapper(wa); k.setCapExempt(address(zap), true); // F3 ledger wiring (REQUIRED)
         w.setCapExempt(address(zap), true);
         k.enableTrading();                 // launch window ON
         maxW = k.maxWallet();
@@ -77,6 +81,22 @@ contract LaunchCapTest is Test {
         assertGe(racksOut, maxW * 90 / 100, "should get close to the full 0.8%");
         assertGt(usdgLeft, 40_000e6, "big refund since cap is cheap");
         assertEq(IERC20x(USDG).balanceOf(address(zap)), 0, "zap holds no USDG");
+    }
+
+    // F3 end-to-end: the SAME wallet cannot buy 1% twice through the zap (cumulative ledger)
+    function testSecondBuySameWalletRefusedByLedger() public onFork {
+        address user = address(0x5EC);
+        deal(USDG, user, 100_000e6);
+        vm.startPrank(user);
+        IERC20x(USDG).approve(address(zap), type(uint256).max);
+        uint256 first = zap.buyRacks(50_000e6, 0, user);          // capped to ~1%
+        k.transfer(address(0xA17), k.balanceOf(user));            // move it all away (would reset a snapshot)
+        uint256 second = zap.buyRacks(50_000e6, 0, user);         // ledger says: already at cap
+        vm.stopPrank();
+        emit log_named_uint("first buy RACKS", first); emit log_named_uint("second buy RACKS", second);
+        assertGt(first, 0);
+        assertLt(second, first / 20, "second buy only fills the remaining sliver, never another 1%");
+        assertLe(k.launchReceived(user), k.maxWallet());
     }
 
     // a normal small buy under the cap is unaffected (little/no refund)

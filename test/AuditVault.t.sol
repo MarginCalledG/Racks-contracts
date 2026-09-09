@@ -79,7 +79,7 @@ contract AuditVault is Test {
     function testAddToPositionResetsWholeLock() public {
         vm.prank(alice); v.lock(2, 1_000_000 ether);
         vm.warp(block.timestamp + 13 days);
-        vm.prank(alice); v.lock(2, 1 ether);
+        vm.prank(alice); v.lock(2, 1_000 ether);
         (,, uint64 ua) = v.position(alice, 2);
         assertEq(ua, block.timestamp + 14 days, "whole position re-locked for 14d");
     }

@@ -17,6 +17,7 @@ interface IPoolManagerL {
         external returns (int256 callerDelta, int256 feesAccrued);
     function sync(Currency currency) external;
     function settle() external payable returns (uint256);
+    function take(Currency currency, address to, uint256 amount) external;
 }
 
 // Minimal v4 pool creator + liquidity provider (unlock -> modifyLiquidity -> settle both legs).
@@ -33,6 +34,10 @@ contract V4Pool {
     function addLiquidity(PoolKey calldata key, int24 tickLower, int24 tickUpper, int256 liquidityDelta) external {
         pm.unlock(abi.encode(CB(key, tickLower, tickUpper, liquidityDelta, msg.sender)));
     }
+    /// burn liquidity of THIS contract's position and pay the tokens out to msg.sender
+    function removeLiquidity(PoolKey calldata key, int24 tickLower, int24 tickUpper, int256 liquidity) external {
+        pm.unlock(abi.encode(CB(key, tickLower, tickUpper, -liquidity, msg.sender)));
+    }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         require(msg.sender == address(pm), "!pm");
@@ -46,6 +51,8 @@ contract V4Pool {
         int128 d1 = int128(callerDelta);
         if (d0 < 0) _pay(c.key.currency0, c.payer, uint256(int256(-d0)));
         if (d1 < 0) _pay(c.key.currency1, c.payer, uint256(int256(-d1)));
+        if (d0 > 0) pm.take(c.key.currency0, c.payer, uint256(int256(d0)));   // withdrawals
+        if (d1 > 0) pm.take(c.key.currency1, c.payer, uint256(int256(d1)));
         return "";
     }
 

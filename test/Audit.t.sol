@@ -9,8 +9,7 @@ import {IRSAgent} from "../src/IRSAgent.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockVRF} from "./MockVRF.sol";
 
-interface IW { function wrap(uint256) external returns (uint256); function unwrap(uint256) external returns (uint256); function balanceOf(address) external view returns (uint256); function setTaxOracle(address) external; function setTaxWallet(address) external; }
-contract RevertingOracle { function update() external pure { revert("boom"); } function taxBps(uint256, bool) external pure returns (uint256) { revert("boom"); } }
+interface IW { function wrap(uint256) external returns (uint256); function unwrap(uint256) external returns (uint256); function balanceOf(address) external view returns (uint256); }
 
 /// Audit regression suite: every exploit found must now be BLOCKED.
 contract AuditFixes is Test {
@@ -66,16 +65,6 @@ contract AuditFixes is Test {
         uint256 b = k.balanceOf(victim);
         vm.prank(victim); k.transfer(attacker, b);
         assertEq(k.balanceOf(victim), 0);
-    }
-
-    // W5: a reverting oracle no longer bricks wrap/unwrap (falls back to flat rate)
-    function testFixed_RevertingOracleDoesNotBrick() public {
-        w.setTaxWallet(address(0x7A11)); k.setExempt(address(0x7A11), true);
-        w.setTaxOracle(address(new RevertingOracle()));
-        vm.prank(attacker); uint256 sh = IW(wa).wrap(10_000 ether);   // must not revert
-        assertGt(sh, 0);
-        assertEq(k.balanceOf(address(0x7A11)), 400 ether);            // fell back to 4% flat
-        vm.prank(attacker); IW(wa).unwrap(sh);                         // must not revert
     }
 
     // R5: enableTrading with zero supply is rejected (would set maxWallet=0 and block all buys)

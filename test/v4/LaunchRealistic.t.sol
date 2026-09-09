@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {HookedBase} from "./HookedBase.sol";
+import {TaxHook} from "../../src/v4/TaxHook.sol";
 import {V4Swap, PoolKey, Currency, IERC20x} from "../../src/v4/V4Swap.sol";
 import {V4Pool} from "../../src/v4/V4Pool.sol";
 import {Zap} from "../../src/v4/Zap.sol";
@@ -12,7 +14,7 @@ import {WRacks} from "../../src/WRacks.sol";
 interface IW { function wrap(uint256) external returns (uint256); function approve(address,uint256) external returns (bool); }
 
 // REAL launch conditions: ~$5,000 of SPY seeding the LP, ~all supply wrapped in.
-contract LaunchRealistic is Test {
+contract LaunchRealistic is HookedBase {
     address constant SPY = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant PM  = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -45,7 +47,9 @@ contract LaunchRealistic is Test {
         uint256 pC1overC0 = wIsC0 ? (1e36 / wrPerSpy) : wrPerSpy;
         uint160 sqrtP = uint160(_isqrt(pC1overC0) * (uint256(1) << 96) / 1e9);
 
-        PoolKey memory wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(0));
+        TaxHook hook = _deployHook(PM, wa, address(k), taxWallet);
+
+        PoolKey memory wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(hook));
         PoolKey memory spyUsdg = PoolKey(Currency.wrap(SPY), Currency.wrap(USDG), 3000, 60, address(0));
         V4Pool pool = new V4Pool(PM); pool.initialize(wrSpy, sqrtP);
         IERC20x(wa).approve(address(pool), type(uint256).max);
@@ -60,8 +64,9 @@ contract LaunchRealistic is Test {
         sw = new V4Swap(PM);
         w.setCapExempt(address(sw), true);
         TwapOracleV4 oracle = new TwapOracleV4(SV, keccak256(abi.encode(wrSpy)), wIsC0);
-        w.setTaxOracle(address(oracle)); w.setTaxWallet(taxWallet);
+        hook.setOracle(address(oracle));
         zap = new Zap(address(sw), wa, address(k), USDG, SPY, QUOTER, spyUsdg, wrSpy);
+        k.setWrapper(wa); k.setCapExempt(address(zap), true); // F3 ledger wiring (REQUIRED)
         w.setCapExempt(address(zap), true);
         k.enableTrading();
         maxW = k.maxWallet();

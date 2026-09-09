@@ -9,12 +9,12 @@ interface IWR {
     function approve(address, uint256) external returns (bool);
     function balanceOf(address) external view returns (uint256);
     function totalSupply() external view returns (uint256);
-    function LAUNCH_TAX_BPS() external view returns (uint256);
 }
 interface IRacksLaunch {
     function inLaunchWindow() external view returns (bool);
     function maxWallet() external view returns (uint256);
     function balanceOf(address) external view returns (uint256);
+    function launchReceived(address) external view returns (uint256);
 }
 struct QuoteExactSingleParams { PoolKey poolKey; bool zeroForOne; uint128 exactAmount; bytes hookData; }
 interface IV4Quoter {
@@ -44,6 +44,12 @@ contract Zap {
         quoter = IV4Quoter(_quoter); usdg = _usdg; spy = _spy; spyUsdg = _spyUsdg; wrSpy = _wrSpy;
     }
 
+    /// return any leftover of a token the zap should never keep (partial-fill refunds land here)
+    function _sweep(address token, address to) internal {
+        uint256 b = IERC20x(token).balanceOf(address(this));
+        if (b > 0) require(IERC20x(token).transfer(to, b), "sweep");
+    }
+
     function _dir(PoolKey memory k, address tokenIn) internal pure returns (bool) {
         return tokenIn == Currency.unwrap(k.currency0);
     }
@@ -52,7 +58,7 @@ contract Zap {
     function _launchCapUsdg(uint256 usdgIn, address to) internal returns (uint256) {
         if (!racksL.inLaunchWindow()) return usdgIn;
         uint256 maxW = racksL.maxWallet();
-        uint256 cur  = racksL.balanceOf(to);
+        uint256 cur  = racksL.launchReceived(to);            // F3: cumulative, not a balance snapshot
         if (cur >= maxW) return 0;
         uint256 capRacks = maxW - cur;
         if (!_wouldExceed(usdgIn, capRacks)) return usdgIn;   // cheap forward check
@@ -72,18 +78,16 @@ contract Zap {
     function _wouldExceed(uint256 usdgIn, uint256 capRacks) internal returns (bool) {
         (uint256 spyOut,) = quoter.quoteExactInputSingle(QuoteExactSingleParams(spyUsdg, _dir(spyUsdg, usdg), uint128(usdgIn), ""));
         (uint256 wrOut,)  = quoter.quoteExactInputSingle(QuoteExactSingleParams(wrSpy,   _dir(wrSpy, spy),    uint128(spyOut), ""));
-        uint256 gross = _grossFromWr(wrOut);
-        return gross - gross * w.LAUNCH_TAX_BPS() / 10000 > capRacks;
+        return _grossFromWr(wrOut) > capRacks;                 // quotes already reflect the pool tax hook
     }
 
     function _usdgForCap(uint256 capRacks) internal returns (uint256 usdgNeeded) {
-        uint256 grossNeeded = (capRacks * 995 / 1000) * 10000 / (10000 - w.LAUNCH_TAX_BPS());
-        uint256 wrNeeded = _wrFromGross(grossNeeded);
+        uint256 wrNeeded = _wrFromGross(capRacks * 995 / 1000); // 0.5% haircut vs quote/exec rounding
         (uint256 spyNeeded,) = quoter.quoteExactOutputSingle(QuoteExactSingleParams(wrSpy, _dir(wrSpy, spy), uint128(wrNeeded), ""));
         (usdgNeeded,)        = quoter.quoteExactOutputSingle(QuoteExactSingleParams(spyUsdg, _dir(spyUsdg, usdg), uint128(spyNeeded), ""));
     }
 
-    /// USDG in -> RACKS out (post buy-side tax). Excess over the launch cap is refunded in USDG.
+    /// USDG in -> RACKS out (pool tax already taken by the hook). Excess over the launch cap is refunded.
     function buyRacks(uint256 usdgIn, uint256 minRacksOut, address to) external returns (uint256 racksOut) {
         require(IERC20x(usdg).transferFrom(msg.sender, address(this), usdgIn), "pull");
         uint256 use = _launchCapUsdg(usdgIn, to);
@@ -93,24 +97,27 @@ contract Zap {
         uint256 spyAmt = swapper.swap(spyUsdg, _dir(spyUsdg, usdg), use, 0, address(this));
         IERC20x(spy).approve(address(swapper), spyAmt);
         uint256 wrAmt  = swapper.swap(wrSpy, _dir(wrSpy, spy), spyAmt, 0, address(this));
-        w.unwrap(wrAmt);
+        w.unwrap(wrAmt);                                     // untaxed form change
         racksOut = racks.balanceOf(address(this));          // actual held (rebasing rounding-safe)
         require(racksOut >= minRacksOut, "slippage");
         require(racks.transfer(to, racksOut), "send");
-        if (use < usdgIn) require(IERC20x(usdg).transfer(msg.sender, usdgIn - use), "refund"); // refund the PAYER
+        _sweep(usdg, msg.sender);   // unused input + any partial-fill refunds
+        _sweep(spy, msg.sender);    // leftover from hop 2 partial fills
     }
 
-    /// RACKS in -> USDG out (post sell-side tax).
+    /// RACKS in -> USDG out (pool tax taken by the hook on the wRACKS->SPY leg).
     function sellRacks(uint256 racksIn, uint256 minUsdgOut, address to) external returns (uint256 usdgOut) {
         require(racks.transferFrom(msg.sender, address(this), racksIn), "pull");
         uint256 have = racks.balanceOf(address(this));      // actual received (rounding-safe)
         racks.approve(address(w), have);
-        uint256 wrAmt  = w.wrap(have);
+        uint256 wrAmt  = w.wrap(have);                       // untaxed form change
         w.approve(address(swapper), wrAmt);
         uint256 spyAmt = swapper.swap(wrSpy, _dir(wrSpy, address(w)), wrAmt, 0, address(this));
         IERC20x(spy).approve(address(swapper), spyAmt);
         usdgOut = swapper.swap(spyUsdg, _dir(spyUsdg, spy), spyAmt, 0, address(this));
         require(usdgOut >= minUsdgOut, "slippage");
         require(IERC20x(usdg).transfer(to, usdgOut), "send");
+        _sweep(address(w), msg.sender); // leftover wRACKS from hop 1 partial fills
+        _sweep(spy, msg.sender);
     }
 }

@@ -84,11 +84,11 @@ contract V4Swap {
 
         // pay exactly what we owe: sync -> transfer -> settle
         pm.sync(curIn);
-        IERC20x(tokenIn).transfer(address(pm), owed);
+        require(IERC20x(tokenIn).transfer(address(pm), owed), "pay");
         pm.settle();
 
         // refund any unconsumed input (partial fill at price limit)
-        if (owed < c.amountIn) IERC20x(tokenIn).transfer(c.payer, c.amountIn - owed); // refund the PAYER
+        if (owed < c.amountIn) require(IERC20x(tokenIn).transfer(c.payer, c.amountIn - owed), "refund"); // refund the PAYER
 
         // collect the output for the user
         pm.take(curOut, c.to, outAmt);

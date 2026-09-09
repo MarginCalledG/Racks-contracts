@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {HookedBase} from "./HookedBase.sol";
+import {TaxHook} from "../../src/v4/TaxHook.sol";
 import {V4Swap, PoolKey, Currency, IERC20x} from "../../src/v4/V4Swap.sol";
 import {V4Pool} from "../../src/v4/V4Pool.sol";
 import {Zap} from "../../src/v4/Zap.sol";
@@ -11,7 +13,7 @@ import {WRacks} from "../../src/WRacks.sol";
 
 interface IW { function wrap(uint256) external returns (uint256); function unwrap(uint256) external returns (uint256); function approve(address,uint256) external returns (bool); function balanceOf(address) external view returns (uint256); function racksPerShare() external view returns (uint256); }
 
-contract StressTest is Test {
+contract StressTest is HookedBase {
     address constant SPY  = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant PM   = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -35,7 +37,8 @@ contract StressTest is Test {
 
         (address c0, address c1) = wa < SPY ? (wa, SPY) : (SPY, wa);
         wIsC0 = (wa == c0);
-        wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(0));
+        TaxHook hook = _deployHook(PM, wa, address(k), taxWallet);
+        wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(hook));
         spyUsdg = PoolKey(Currency.wrap(SPY), Currency.wrap(USDG), 3000, 60, address(0));
 
         pool = new V4Pool(PM);
@@ -48,14 +51,13 @@ contract StressTest is Test {
         IERC20x(wa).approve(address(sw), type(uint256).max);
         IERC20x(SPY).approve(address(sw), type(uint256).max);
         oracle = new TwapOracleV4(SV, keccak256(abi.encode(wrSpy)), wIsC0);
-        w.setTaxOracle(address(oracle));
-        w.setTaxWallet(taxWallet);                   // tax ON from here
+        hook.setOracle(address(oracle));
         zap = new Zap(address(sw), wa, address(k), USDG, SPY, 0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94, spyUsdg, wrSpy);
     }
     modifier onFork() { if (!forked) { vm.skip(true); return; } _; }
 
-    function _totalSpy() internal view returns (uint256) { return IERC20x(SPY).balanceOf(address(this)) + IERC20x(SPY).balanceOf(PM); }
-    function _totalWr()  internal view returns (uint256) { return IERC20x(wa).balanceOf(address(this)) + IERC20x(wa).balanceOf(PM); }
+    function _totalSpy() internal view returns (uint256) { return IERC20x(SPY).balanceOf(address(this)) + IERC20x(SPY).balanceOf(PM) + IERC20x(SPY).balanceOf(taxWallet); }
+    function _totalWr()  internal view returns (uint256) { return IERC20x(wa).balanceOf(address(this)) + IERC20x(wa).balanceOf(PM) + IERC20x(wa).balanceOf(taxWallet); }
 
     // 1) buy then sell back: must NEVER end with more than started (no free money)
     function testSwapRoundTripNoFreeMoney() public onFork {
@@ -67,7 +69,7 @@ contract StressTest is Test {
         assertEq(spy1, spy0 - 100 ether + spyBack);
         uint256 lossBps = (spy0 - spy1) * 10000 / 100 ether;
         emit log_named_uint("round-trip loss bps (fees+slippage)", lossBps);
-        assertLt(lossBps, 800, "loss unreasonably high"); // 2x0.3% fee + slippage on 3% of pool
+        assertLt(lossBps, 1500, "loss unreasonably high"); // pool tax both ways (~4%+impact each) + 2x0.3% fee + slippage
     }
 
     // 2) 100 alternating swaps: no revert, tokens conserved across user+pool (fees stay in pool)
@@ -128,7 +130,7 @@ contract StressTest is Test {
         vm.startPrank(user);
         IERC20x(USDG).approve(address(zap), type(uint256).max);
         uint256 racksOut = zap.buyRacks(5_000e6, 0, user);
-        uint256 taxAfterBuy = k.balanceOf(taxWallet);
+        uint256 taxAfterBuy = IERC20x(wa).balanceOf(taxWallet);          // buy tax lands in wRACKS
         k.approve(address(zap), type(uint256).max);
         uint256 usdgBack = zap.sellRacks(k.balanceOf(user), 0, user);
         vm.stopPrank();
@@ -136,8 +138,8 @@ contract StressTest is Test {
         emit log_named_uint("USDG back (1e6)", usdgBack);
         assertLt(usdgBack, 5_000e6, "must not profit from a round trip");
         assertLe(k.balanceOf(user), 1, "RACKS should be fully sold (dust ok)");
-        assertGt(taxAfterBuy, 0, "buy-side tax");
-        assertGt(k.balanceOf(taxWallet), taxAfterBuy, "sell-side tax");
+        assertGt(taxAfterBuy, 0, "buy-side tax (wRACKS)");
+        assertGt(IERC20x(SPY).balanceOf(taxWallet), 0, "sell-side tax (SPY)");
         assertEq(k.balanceOf(address(zap)), 0, "zap must not hold RACKS");
         assertEq(IERC20x(USDG).balanceOf(address(zap)), 0, "zap must not hold USDG");
     }
@@ -184,10 +186,10 @@ contract StressTest is Test {
         uint256 sh = IW(wa).wrap(100_000 ether);
         uint256 out = IW(wa).unwrap(sh);
         vm.stopPrank();
-        uint256 taxed = k.balanceOf(taxWallet) - tax0;
-        emit log_named_uint("got back", out); emit log_named_uint("taxed total", taxed);
-        assertApproxEqAbs(out + taxed, 100_000 ether, 1e6, "value must be conserved (dust)");
-        assertLt(out, 100_000 ether, "two taxes must have been paid");
+        emit log_named_uint("got back", out);
+        // wrap/unwrap is a pure form change now (tax lives in the pool hook): value conserved, no fee
+        assertApproxEqAbs(out, 100_000 ether, 1e6, "wrap/unwrap must not lose value");
+        assertEq(k.balanceOf(taxWallet), tax0, "no tax on wrap/unwrap");
         assertApproxEqAbs(k.balanceOf(u) + k.balanceOf(wa) + k.balanceOf(taxWallet), total0, 1e6);
     }
 

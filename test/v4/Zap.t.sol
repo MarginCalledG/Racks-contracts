@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {HookedBase} from "./HookedBase.sol";
+import {TaxHook} from "../../src/v4/TaxHook.sol";
 import {V4Swap, PoolKey, Currency, IERC20x} from "../../src/v4/V4Swap.sol";
 import {V4Pool} from "../../src/v4/V4Pool.sol";
 import {Zap} from "../../src/v4/Zap.sol";
@@ -10,7 +12,7 @@ import {WRacks} from "../../src/WRacks.sol";
 
 interface IW { function wrap(uint256) external returns (uint256); function approve(address,uint256) external returns (bool); function balanceOf(address) external view returns (uint256); function setTaxWallet(address) external; }
 
-contract ZapTest is Test {
+contract ZapTest is HookedBase {
     address constant SPY  = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant PM   = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -28,13 +30,13 @@ contract ZapTest is Test {
         k.mint(address(this), 2_000_000 ether);
         k.approve(address(w), type(uint256).max);
         IW(address(w)).wrap(1_000_000 ether);   // seed wrap (untaxed)
-        w.setTaxWallet(taxWallet);               // enable tax AFTER seeding
 
         // seed our wRACKS/SPY pool
         deal(SPY, address(this), 5_000 ether);
         address wa = address(w);
         (address c0, address c1) = wa < SPY ? (wa, SPY) : (SPY, wa);
-        PoolKey memory wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(0));
+        TaxHook hook = _deployHook(PM, wa, address(k), taxWallet);
+        PoolKey memory wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(hook));
         V4Pool pool = new V4Pool(PM);
         pool.initialize(wrSpy, SQRT_1TO1);
         IERC20x(wa).approve(address(pool), type(uint256).max);
@@ -58,9 +60,9 @@ contract ZapTest is Test {
 
         emit log_named_uint("USDG in (1e6)", 1_000e6);
         emit log_named_uint("RACKS out to user", racksOut);
-        emit log_named_uint("tax collected (RACKS)", k.balanceOf(taxWallet));
+        emit log_named_uint("tax collected (wRACKS, at the pool)", IERC20x(wa).balanceOf(taxWallet));
         assertGt(racksOut, 0, "no RACKS delivered");
         assertEq(k.balanceOf(user), racksOut, "RACKS not in user wallet");
-        assertGt(k.balanceOf(taxWallet), 0, "no tax collected");
+        assertGt(IERC20x(wa).balanceOf(taxWallet), 0, "no tax collected");
     }
 }

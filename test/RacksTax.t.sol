@@ -66,10 +66,11 @@ contract RacksTaxTest is Test {
     }
 
     // no oracle set -> trades are untaxed (safe default)
-    function testNoOracleNoTax() public {
-        k.setTaxOracle(address(0));
-        vm.prank(alice);
-        k.transfer(pool, 100_000 ether);
-        assertEq(k.balanceOf(pool), 100_000 ether);
+    // no oracle wired -> flat BASE rate (4%), never 0 (a missing oracle must not disable the tax)
+    function testNoOracleBaseTax() public {
+        k.setTaxWallet(taxWallet);
+        vm.prank(alice); k.transfer(pool, 100_000 ether);
+        assertEq(k.balanceOf(pool), 96_000 ether, "4% base tax without oracle");
+        assertEq(k.balanceOf(taxWallet), 4_000 ether);
     }
 }

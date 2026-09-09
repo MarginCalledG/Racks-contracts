@@ -31,7 +31,7 @@ contract CaymanIslands is ReentrancyGuard {
     uint256[3] public DURATION = [uint256(1 days), 3 days, 14 days];
     uint256[3] public FEE;
     uint256[3] public BLEED = [B1, B3, RAY];
-    uint256 public constant MIN_LOCK = 1 ether; // E4: no 1-wei dust positions
+    uint256 public constant MIN_LOCK = 1_000 ether; // dust floor; expired dust is auto-pruned (F7)
 
     struct Pos { uint256 principal; uint64 lockedAt; uint64 unlockAt; } // lockedAt doubles as "last settled"
     mapping(address => Pos[3]) internal _pos;
@@ -62,13 +62,27 @@ contract CaymanIslands is ReentrancyGuard {
         }
     }
 
+    /// paged live pot for frontends when the active list is large
+    function potLiveRange(uint256 from, uint256 count) external view returns (uint256 live, uint256 next) {
+        uint256 n = _active.length; if (from >= n) return (0, n);
+        uint256 to = from + count; if (to > n) to = n;
+        for (uint256 i = from; i < to; i++) {
+            bytes32 k = _active[i]; (, uint256 bleedAmt,) = _split(_pos[address(uint160(uint256(k) >> 8))][uint8(uint256(k) & 0xff)], uint8(uint256(k) & 0xff));
+            live += bleedAmt;
+        }
+        next = to;
+    }
+
     /// settle a page of active positions into the pot. Permissionless; used by keepers and by the
     /// agent contract right before an epoch settles.
     function harvestBatch(uint256 from, uint256 count) public nonReentrant {
-        uint256 n = _active.length; if (from >= n) return;
-        uint256 to = from + count; if (to > n) to = n;
-        for (uint256 i = from; i < to; i++) {
-            bytes32 k = _active[i]; _settle(address(uint160(uint256(k) >> 8)), uint8(uint256(k) & 0xff));
+        uint256 i = from; uint256 done;
+        // removal-safe: a pruned entry is swapped out for the last one, so re-check index i
+        while (done < count && i < _active.length) {
+            bytes32 k = _active[i];
+            _settle(address(uint160(uint256(k) >> 8)), uint8(uint256(k) & 0xff));
+            if (i < _active.length && _active[i] == k) i++;   // not pruned -> advance
+            done++;
         }
         _syncLocked();
     }
@@ -124,6 +138,12 @@ contract CaymanIslands is ReentrancyGuard {
         if (meltAmt > 0) racks.burn(meltAmt);                 // real melt: supply shrinks, not pot
         p.principal = payout; p.lockedAt = uint64(block.timestamp);
         if (bleedAmt > 0 || meltAmt > 0) emit Settled(u, b, bleedAmt, meltAmt);
+        // F7: expired positions that melted below the dust floor leave the active set (list poisoning)
+        if (payout > 0 && payout < MIN_LOCK && block.timestamp >= p.unlockAt) {
+            delete _pos[u][b]; _remove(u, b);
+            require(racks.transfer(u, payout), "dust");
+            return 0;
+        }
         remaining = payout;
     }
 

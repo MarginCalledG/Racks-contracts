@@ -32,7 +32,7 @@ contract Deploy is Script {
         Racks racks  = new Racks(minIndex);
         CaymanIslands vault     = new CaymanIslands(address(racks), usdg, reserve);
         IRSAgent agents     = new IRSAgent(usdg, address(vault), vrfCoord, reserve);
-        TwapOracle twap   = new TwapOracle(pair);
+        TwapOracle twap   = new TwapOracle(pair, address(racks));
         TaxSwapper swapper= new TaxSwapper(address(racks), spy, router, priceSrc, reserve, swapThr, maxSlip);
         WRacks wracks     = new WRacks(address(racks));
 

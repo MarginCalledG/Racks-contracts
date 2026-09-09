@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {HookedBase} from "./HookedBase.sol";
+import {TaxHook} from "../../src/v4/TaxHook.sol";
 import {V4Swap, PoolKey, Currency, IERC20x} from "../../src/v4/V4Swap.sol";
 import {V4Pool} from "../../src/v4/V4Pool.sol";
 import {Zap} from "../../src/v4/Zap.sol";
@@ -16,7 +18,7 @@ interface IW { function wrap(uint256) external returns (uint256); function appro
 
 /// 2-week economic simulation on a mainnet fork: ~$1M volume via Zap, vaults in all tiers,
 /// 100 IRS agents across 10 wallets attacking every epoch, feeding, dying, pari-mutuel payouts.
-contract Simulation2W is Test {
+contract Simulation2W is HookedBase {
     address constant SPY  = 0x117cc2133c37B721F49dE2A7a74833232B3B4C0C;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant PM   = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
@@ -53,7 +55,8 @@ contract Simulation2W is Test {
         bool wIsC0 = (wa == c0);
         uint256 price1e18 = wIsC0 ? 1e13 : 1e23;              // SPY per wRACKS or wRACKS per SPY
         uint160 sqrtP = uint160(_isqrt(price1e18) * (1 << 96) / 1e9);
-        wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(0));
+        TaxHook hook = _deployHook(PM, wa, address(k), taxWallet);
+        wrSpy = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3000, 60, address(hook));
         spyUsdg = PoolKey(Currency.wrap(SPY), Currency.wrap(USDG), 3000, 60, address(0));
         pool = new V4Pool(PM); pool.initialize(wrSpy, sqrtP);
         IERC20x(wa).approve(address(pool), type(uint256).max); IERC20x(SPY).approve(address(pool), type(uint256).max);
@@ -61,8 +64,9 @@ contract Simulation2W is Test {
 
         sw = new V4Swap(PM);
         oracle = new TwapOracleV4(SV, keccak256(abi.encode(wrSpy)), wIsC0);
-        w.setTaxOracle(address(oracle)); w.setTaxWallet(taxWallet);
+        hook.setOracle(address(oracle));
         zap = new Zap(address(sw), wa, address(k), USDG, SPY, 0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94, spyUsdg, wrSpy);
+        k.setWrapper(wa); k.setCapExempt(address(zap), true); // F3 ledger wiring (REQUIRED)
         k.enableTrading();
 
         for (uint i = 0; i < 10; i++) {
@@ -195,7 +199,8 @@ contract Simulation2W is Test {
         // ---- REPORT ----
         emit log("=== 2-WEEK SIMULATION REPORT ===");
         emit log_named_uint("trading volume (USDG, 1e6)", volumeUsdg);
-        emit log_named_uint("tax collected (RACKS)", k.balanceOf(taxWallet));
+        emit log_named_uint("tax collected wRACKS (buys)", IERC20x(wa).balanceOf(taxWallet));
+        emit log_named_uint("tax collected SPY (sells)", IERC20x(SPY).balanceOf(taxWallet));
         emit log_named_uint("tier0 (common) count / 100", tierCount[0]);
         emit log_named_uint("tier1 (senior) count / 100", tierCount[1]);
         emit log_named_uint("tier2 (special) count / 100", tierCount[2]);
@@ -211,7 +216,7 @@ contract Simulation2W is Test {
 
         // ---- ASSERTIONS ----
         assertGe(volumeUsdg, 1_000_000e6, "need >= $1M volume");
-        assertGt(k.balanceOf(taxWallet), 0, "tax must accrue");
+        assertGt(IERC20x(wa).balanceOf(taxWallet) + IERC20x(SPY).balanceOf(taxWallet), 0, "tax must accrue at the pool");
         // rarity within statistical bounds for n=100 (exact odds proven by boundary test)
         assertTrue(tierCount[0] >= 60 && tierCount[0] <= 88, "tier0 ~75%");
         assertTrue(tierCount[1] >= 8  && tierCount[1] <= 34, "tier1 ~20%");
@@ -229,7 +234,7 @@ contract Simulation2W is Test {
         // 2 days past expiry = 2 days of NORMAL melt (~0.931^2 at max rate), burned -> nothing to the pot
         assertLt(w8got, 1_000_000 ether * 90 / 100, "expired 14d lock must have melted");
         assertGt(w8got, 1_000_000 ether * 80 / 100, "but only ~2 days worth");
-        assertEq(w8got, w8claim, "no penalty anymore: payout == melted claim");
+        assertApproxEqAbs(w8got, w8claim, 2, "no penalty anymore: payout == melted claim (wei rounding)");
         // starved agent #100 must be dead; fed ones alive
         assertFalse(ag.alive(100), "unfed agent must die");
         assertTrue(ag.alive(1), "fed agent alive");

@@ -95,6 +95,88 @@ eine 1M-RACKS-Spende blockiert nur noch Wraps < 1 RACKS (vorher < 1000), Opfer v
 Rollback-/Prediction-Angriffe auf den Zufall: strukturell ausgeschlossen (Ergebnis kommt in einer
 separaten VRF-Fulfill-TX, im Angriff-TX ist es unbekannt -> nichts zum Zurueckrollen).
 
+## Runde 4 — Antwort auf das EXTERNE Audit (test/ExternalAudit.t.sol)
+Jeder Diebstahl-Fund per PoC VERIFIZIERT (nicht geglaubt), dann gefixt, dann Regressionstest.
+
+**F1 (kritisch) — Settle in falscher Reihenfolge stahl den Pot der Vorepoche.** PoC: Alice (einzige
+Gewinnerin e0) bekam 0, Bob (e1) nahm 66.890 RACKS. BESTAETIGT. Fix: strikt sequenzielles Settle;
+leere Vorgaenger-Epochen (keine Shares, nichts pendend) settlen automatisch mit, Epochen mit
+Gewinnern muessen zuerst explizit gesettlet werden (`settledThrough`).
+**F2 (kritisch) — Claim nach sweepStale war ein Double-Spend** (mein eigener A5-Fix hatte die Luecke
+geoeffnet). PoC: Alice claimte 33.558 aus einer geswepten Epoche, Bob bekam 66.442 statt 100.000.
+BESTAETIGT. Fix: Auszahlung wird auf `epochUnclaimed[e]` gedeckelt (nach Sweep 0) + require > 0.
+**F3 (hoch) — Launch-Cap war ein Balance-Snapshot.** PoC: kaufen -> unwrappen -> kaufen: 500.000 RACKS
+in EINEM Wallet bei 110.000 Cap (4.5x). BESTAETIGT. Fix: kumulatives `launchReceived`-Ledger in RACKS
+(steigt nie), gespeist von Router->Wallet-Lieferungen (Zap) UND Pool->Wallet-Lieferungen (der Wrapper
+meldet sie per `recordLaunchReceipt`). Peer-Transfers bleiben bewusst uncapped (Owner-Entscheidung);
+Token wegzuschieben senkt den Erwerbs-Zaehler nie -> Schleife geschlossen. Fork-Test: zweiter Kauf
+desselben Wallets liefert nur noch den 0.5%-Haircut-Rest.
+  DEPLOY-PFLICHT: `racks.setWrapper(wRACKS)` und `racks.setCapExempt(zap)` — ohne setWrapper
+  reverten Launch-Transfers an Nutzer mit "!wrapper" (fail-closed), ohne capExempt(zap) zaehlt
+  der Zap-Kauf nicht und der Cap ist wirkungslos. Beides steht in STATUS.md.
+**F6** — Orakel ohne Code brickte wrap/unwrap (try/catch faengt den extcodesize-Check nicht).
+Fix: `require(o.code.length > 0)` im Setter + Codesize-Guard bei Nutzung.
+**F7** — `_active`-Liste vergiftbar. Fix: abgelaufene Positionen unter MIN_LOCK werden beim Settle
+automatisch entfernt (Dust an den Owner zurueck), MIN_LOCK 1.000 RACKS, `potLiveRange(from,count)`
+zum Pagen; `harvestBatch` ist removal-sicher (swap-and-pop waehrend Iteration).
+**F8** — MAX_PER_WALLET galt nur beim Mint. Fix: Cap in `_update` auf den Empfaenger.
+**F9** — Unrevealter Agent war ein Zombie (nicht fuetter-/reapbar, zaehlte aber). Fix: reap nach
+LIFE auch fuer unrevealte.
+**Zap/V4Swap** — gestrandete Teil-Fill-Refunds. Fix: nach jedem Aufruf werden Restbestaende von
+USDG/SPY/wRACKS an msg.sender gesweept; Return-Werte der Refund-Transfers werden geprueft.
+**Owner-Macht** — `renounceExemptControl()` in RACKS: setExempt (der Rug-Vektor) laesst sich nach
+dem Launch permanent abschalten.
+
+**F4/F5 — GELOEST: Tax lebt jetzt AM POOL (src/v4/TaxHook.sol).** Owner-Entscheidung: "wir brauchen
+unbedingt tax". v4-afterSwap-Hook nach dem Standard-"Taking-Fee"-Muster: nimmt bei JEDEM Swap die Tax
+direkt aus dem Output des Swappers (hookDelta) und schickt sie per `take` an die Tax-Wallet.
+Unumgehbar fuer Direkt-Trader, Bots, Router. Kauf-Tax faellt in wRACKS an, Verkaufs-Tax in SPY
+(landet ohne Swapper reserve-fertig). Der Hook ruft bei jedem Swap `oracle.update()` -> das TWAP ist
+nicht mehr stale (loest die Orakel-Beobachtung). Fork-Tests (test/v4/TaxHook.t.sol): Direktkauf/-
+verkauf besteuert (Basis 4% + Impact), Launch 8%, nach Dump 799 bps Sell / 102 bps Buy,
+**Stueckelung spart nur noch 2.3%** (vorher ~50%), revertierendes Orakel -> Fallback statt Brick.
+Die Wrapper-Tax wurde ENTFERNT (ein einziges Tax-Modell; Zap-Nutzer zahlen nicht doppelt): wrap/
+unwrap ist eine reine Formaenderung. Hook-Adresse muss per CREATE2 gemint werden (low 14 bits ==
+AFTER_SWAP|AFTER_SWAP_RETURNS_DELTA = 0x44); der wRACKS/SPY-Pool MUSS mit dem Hook im PoolKey
+erstellt werden (ein hookloser Pool haette keine Tax). Direkt-Round-Trip kostet nun ~13%.
+Offen: Umwandlung der wRACKS-Tax in SPY (Tax-Wallet swappt mit `exemptSender`, damit sie sich nicht
+selbst besteuert) — einfacher Keeper-Schritt, kein Contract noetig.
+**OFFEN — Infrastruktur:** Deploy.s.sol ist v2-Stand (deployt weder Zap noch V4Swap noch
+TwapOracleV4, kein setCapExempt/setWrapper/setTaxOracle); VRF-Interface ist fiktiv (Chainlink-v2.5-
+Adapter noetig, Verfuegbarkeit auf RH ungeklaert); TwapOracleV4 sampelt nur bei wrap/unwrap.
+**Frontend-Drift (nicht dieses Repo):** EXPIRED_BLEED 2%/d -> real: normaler Melt, gebrannt;
+Special-Hitrate 80 -> 75; Tax-Caps 7/5 -> 8/8; useTradeTax muss wRACKS-Mengen quoten.
+
+## Runde 5 — Komplett-Check nach dem Hook-Umbau (test/v4/HookAdversarial.t.sol + alles)
+(A) Gezielte Angriffe auf den neuesten Code: exact-OUTPUT-Swaps werden auf der Input-Seite besteuert
+(kein Umweg ueber den anderen Swap-Modus); Liquiditaets-Ops unbesteuert; nur der Owner kann Sender
+exempten / die Tax-Wallet setzen; fremder Pool mit unserem Hook ist harmlos.
+**DEPLOY-FALLE gefunden und abgesichert:** Der Hook liefert Tax-wRACKS an die Tax-Wallet; waehrend
+der Launch-Stunde laeuft das durch das kumulative Cap-Ledger. Ist die Tax-Wallet NICHT exempt, hat
+sie nach ~1% Tax den Cap erreicht und **jeder weitere Swap revertet — der Pool ist fuer den Rest
+der Launch-Stunde tot** (Fork-Test: nach 25 Swaps). Fix/Guard: `TaxHook.wiringOk()` prueft, dass die
+Tax-Wallet in RACKS exempt UND in wRACKS capExempt ist; das Deploy-Skript muss `require(wiringOk())`.
+(B) Invarianten-Fuzz 1.000 Laeufe x 60 Tiefe = 60.000 Calls je Suite: keine Inflation, Index
+gebunden, Rate im Band, Vault solvent, Allokation <= Pot — alles haelt.
+(C) 99 normale + 40 Fork-Tests gruen.
+(D) 2-Wochen-Sim und $17.9M-Stress unter dem Hook-Modell: Raritaet/Trefferquoten/Pot-Oekonomie
+unveraendert; Tax faellt am Pool an (wRACKS bei Kaeufen, SPY bei Verkaeufen -> reserve-fertig);
+Tax-Band stets in [400, 800]; Launch-Stunde ohne Revert.
+Tax-Groessenordnung (gemessen): kleiner Trade 4.03%/4.01% -> ~8.4% Round-Trip; 1% des Pools
+5.6%/4.7%; 3.3% des Pools 8.0%/6.4% -> ~14%. Der Impact-Term greift bei Whales, nicht bei
+Kleinanlegern. Bei einem $5k-Launch-Pool ist JEDER mittlere Trade ein grosser Pool-Anteil -> nahe 8%.
+
+## Runde 6 — Architekturwechsel auf v2 (atomarer Pool-Melt)
+Angegriffen: Bounty-Farming (100 Wiederholungscalls zahlen 0), Doppelzaehlung des Pool-Melts
+(folgt exakt dem Index-Verhaeltnis), LP-Ausstieg nach 5 Tagen Melt (funktioniert, keine Insolvenz),
+Sandwich um den Melt herum (Round-Trip verliert Geld), setPair ohne Exempt (revertet),
+Supply-Wirkung (Pool-Melt verkleinert die Supply wirklich). Keine Exploits.
+Bewusste Abwaegung: meltPool traegt KEIN nonReentrant, weil der externe Self-Call aus _preOp genau
+dann komplett zurueckrollen soll, wenn das Pair gelockt ist. Sicher, weil meltPool nur Pair-State
+anfasst und sync() nicht in Racks zurueckruft.
+Restrisiko (bekannt, klein): zwischen Epochenwechsel und erstem meltPool ist der Pool-Preis 0,09-0,15%
+zu niedrig — dieselbe Arb-Klasse wie AMPL-Syncs; die Bounty haelt das Fenster praktisch geschlossen.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

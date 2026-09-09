@@ -3,9 +3,10 @@ pragma solidity ^0.8.20;
 
 import {DynamicTax} from "./DynamicTax.sol";
 
+/// real Uniswap v2 pair
 interface IPair {
-    function racksReserve() external view returns (uint256);
-    function spyReserve() external view returns (uint256);
+    function getReserves() external view returns (uint112, uint112, uint32);
+    function token0() external view returns (address);
 }
 
 /// @title TwapOracle — 15-min time-weighted price + impact, feeding the DynamicTax rate
@@ -27,19 +28,28 @@ contract TwapOracle {
     uint256 public lastTs;
     uint256 public lastSpot;
 
-    constructor(address _pair) {
+    bool public racksIs0;
+
+    constructor(address _pair, address _racks) {
         pair = IPair(_pair);
+        racksIs0 = (IPair(_pair).token0() == _racks);
         owner = msg.sender;
         lastTs = block.timestamp;
         lastSpot = _spot();
     }
 
-    function setPair(address p) external { require(msg.sender == owner, "!owner"); pair = IPair(p); }
+    function setPair(address p, address _racks) external { require(msg.sender == owner, "!owner"); pair = IPair(p); racksIs0 = (IPair(p).token0() == _racks); }
+
+    function _reserves() internal view returns (uint256 kr, uint256 sr) {
+        (uint112 r0, uint112 r1,) = pair.getReserves();
+        (kr, sr) = racksIs0 ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
+    }
+    function racksReserve() public view returns (uint256 kr) { (kr,) = _reserves(); }
 
     function _spot() internal view returns (uint256) {
-        uint256 kr = pair.racksReserve();
+        (uint256 kr, uint256 sr) = _reserves();
         if (kr == 0) return lastSpot;
-        return pair.spyReserve() * 1e18 / kr; // SPY per RACKS, 1e18-scaled
+        return sr * 1e18 / kr; // SPY per RACKS, 1e18-scaled
     }
 
     function spot() external view returns (uint256) { return _spot(); }
@@ -75,7 +85,7 @@ contract TwapOracle {
         uint256 sp = _spot();
         uint256 tw = twap();
         if (tw == 0) tw = sp;
-        uint256 kr = pair.racksReserve();
+        uint256 kr = racksReserve();
         uint256 impactBps = kr == 0 ? 0 : amount * 10000 / kr;
         return DynamicTax.taxBps(isSell, sp, tw, impactBps);
     }
