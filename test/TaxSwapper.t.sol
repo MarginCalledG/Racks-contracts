@@ -42,6 +42,8 @@ contract TaxSwapperTest is Test {
         k.setDex(pool, true);
 
         k.mint(alice, 1_000_000 ether);
+        k.enableTrading(); vm.warp(block.timestamp + 1 hours + 1);   // launch armed, window over
+        k.setExempt(alice, true); k.setExempt(pool, true);           // exact tax assertions, no melt drift
     }
 
     function _sell(uint256 amt) internal { vm.prank(alice); k.transfer(pool, amt); }

@@ -46,7 +46,11 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     mapping(uint32 => uint256) public totalShares;
     mapping(uint32 => uint256) public rewardPerShareRay;
-    mapping(uint32 => bool) public settled;
+    mapping(uint32 => bool) internal _settledMap;
+    uint32[] public activeEpochs;      // epochs that ever had an attack (ascending)
+    uint256 public activeCursor;       // first not-yet-settled entry in activeEpochs
+    /// N3: O(1) — everything below settledThrough counts as settled without touching storage per epoch
+    function settled(uint32 e) public view returns (bool) { return e < settledThrough || _settledMap[e]; }
     mapping(uint256 => mapping(uint32 => uint256)) public shares;
     uint256 public allocatedPot;
     uint256 public autoHarvest = 25; // positions harvested inside settle() (bounded gas); keepers page the rest
@@ -127,6 +131,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         uint32 e = currentEpoch();
         require(uint32(e + 1) > r.lastAtkEpoch1, "cooldown");
         r.lastAtkEpoch1 = e + 1;
+        if (pendingAttacks[e] == 0 && (activeEpochs.length == 0 || activeEpochs[activeEpochs.length - 1] != e)) activeEpochs.push(e);
         pendingAttacks[e]++;
         uint256 rid = vrf.requestRandom(address(this));
         reqs[rid] = Req(2, id, e);
@@ -146,7 +151,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         } else {
             if (pendingAttacks[q.epoch] > 0) pendingAttacks[q.epoch]--;
             // E1 fix: a result landing AFTER the epoch was settled must not mint phantom shares
-            if (settled[q.epoch]) { emit Attacked(q.agentId, q.epoch, false); return; }
+            if (settled(q.epoch)) { emit Attacked(q.agentId, q.epoch, false); return; }
             R storage rab = agents[q.agentId];
             bool hit = (word % 100) < HITRATE[rab.tier];
             if (hit) {
@@ -162,18 +167,16 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     function settle(uint32 e) public {
         require(e < currentEpoch(), "open");
-        // F1: strictly in order. Empty predecessor epochs (no shares, nothing pending) auto-settle;
-        // an epoch with winners must be settled explicitly before any later one.
-        for (uint32 x = settledThrough; x < e; x++) {
-            if (settled[x]) continue;
-            require(totalShares[x] == 0 && pendingAttacks[x] == 0, "prev");
-            settled[x] = true;
-        }
+        // F1 + N3: strictly in order, in O(1). Empty epochs need no per-epoch write — advancing
+        // settledThrough covers them. Only epochs that ever saw an attack are tracked, and the
+        // earliest unsettled one of those must not lie before e.
+        if (activeCursor < activeEpochs.length) require(activeEpochs[activeCursor] >= e, "prev");
         // E2 fix: cannot settle until every attack's VRF result is in, or the grace period passed
         require(pendingAttacks[e] == 0 || block.timestamp >= epochEnd(e) + SETTLE_GRACE, "results pending");
-        if (settled[e]) return;
-        settled[e] = true;
+        if (settled(e)) return;
+        _settledMap[e] = true;
         if (e + 1 > settledThrough) settledThrough = e + 1;
+        while (activeCursor < activeEpochs.length && activeEpochs[activeCursor] <= e) activeCursor++;
         if (totalShares[e] > 0) {
             // E4 fix: rotate the harvest window so every active position gets booked over time
             uint256 n = vault.activeCount();
@@ -193,7 +196,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     function claim(uint256 id, uint32 e) external nonReentrant {
         require(ownerOf(id) == msg.sender, "!owner");
-        if (!settled[e]) settle(e);
+        if (!settled(e)) settle(e);
         uint256 w = shares[id][e];
         require(w > 0, "nothing");
         shares[id][e] = 0;
@@ -218,14 +221,14 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     }
 
     function pending(uint256 id, uint32 e) external view returns (uint256) {
-        if (!settled[e] || shares[id][e] == 0) return 0;
+        if (!settled(e) || shares[id][e] == 0) return 0;
         return shares[id][e] * rewardPerShareRay[e] / RAY;
     }
 
     /// A5 fix: after CLAIM_WINDOW epochs, whatever a settled epoch never paid out returns to the pot
     /// (otherwise forgotten claims would lock pot forever). Permissionless.
     function sweepStale(uint32 e) external {
-        require(settled[e] && currentEpoch() > e + CLAIM_WINDOW, "not stale");
+        require(settled(e) && currentEpoch() > e + CLAIM_WINDOW, "not stale");
         uint256 left = epochUnclaimed[e];
         if (left == 0) return;
         epochUnclaimed[e] = 0;

@@ -47,6 +47,7 @@ contract IntegrationTest is Test {
 
     function testFullUserJourney() public {
         racks.mint(alice, 1_000_000 ether);
+        racks.enableTrading(); vm.warp(block.timestamp + 1 hours + 1);   // launch armed, window over
         racks.mint(carol, 1_000_000 ether);
         usdg.mint(alice, 10_000 ether);
         usdg.mint(carol, 10_000 ether);

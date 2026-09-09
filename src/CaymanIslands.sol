@@ -181,8 +181,11 @@ contract CaymanIslands is ReentrancyGuard {
 
     function relock(uint8 b) external nonReentrant {
         require(b < 3 && _pos[msg.sender][b].principal > 0, "none");
-        require(usdg.transferFrom(msg.sender, reserve, FEE[b]), "fee");
-        _settle(msg.sender, b);                                // applies any post-expiry melt first
+        _settle(msg.sender, b);
+        // the settle above may have pruned a dust position and paid it out — do not charge a fee
+        // for relocking something that no longer exists
+        require(_pos[msg.sender][b].principal > 0, "pruned");
+        require(usdg.transferFrom(msg.sender, reserve, FEE[b]), "fee");                                // applies any post-expiry melt first
         _pos[msg.sender][b].unlockAt = uint64(block.timestamp + DURATION[b]);
         _syncLocked();
     }

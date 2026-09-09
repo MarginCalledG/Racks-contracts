@@ -29,6 +29,9 @@ contract RacksTaxTest is Test {
         k.setTaxOracle(address(oracle));
         k.setDex(pool, true);             // mark the pool
         k.mint(alice, 1_000_000 ether);
+        k.enableTrading(); vm.warp(block.timestamp + 1 hours + 1);   // launch armed, window over
+        // melt-exempt the actors so these tax assertions stay exact (they test rates, not melt)
+        k.setExempt(alice, true); k.setExempt(bob, true); k.setExempt(pool, true);
     }
 
     // plain wallet -> wallet transfer: NO tax

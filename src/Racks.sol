@@ -209,6 +209,11 @@ contract Racks is ReentrancyGuard {
         uint256 dt = _preOp();
         uint256 bal = balanceOf(from);
         require(amount <= bal, "balance");                  // R2 fix: standard ERC20 revert (no silent clamp)
+        // N2: no pool trading before the launch is armed. Seeding LP and owner ops are tax-exempt
+        // addresses and stay allowed, so addLiquidity still works before enableTrading().
+        if (tradingStart == 0 && (isDex[from] || isDex[to])) {
+            require(isTaxExempt[from] || isTaxExempt[to], "not started");
+        }
         uint256 bps = _taxBps(from, to, amount);
         uint256 removed = _debit(from, amount);
         uint256 tax = removed * bps / 10000;
@@ -244,6 +249,7 @@ contract Racks is ReentrancyGuard {
     }
 
     function setExempt(address a, bool e) external onlyOwner {
+        require(!exemptControlRenounced, "renounced");   // N1: the flag must actually bind
         uint256 dt = _preOp();
         if (isExempt[a] != e) {
             uint256 bal = balanceOf(a);
@@ -309,6 +315,9 @@ contract Racks is ReentrancyGuard {
             pairIndex = idx;
         }
         IPairSync(p).sync();   // atomic with the melt above; reverts everything if the pair is locked
+        if (msg.sender != address(this)) {           // external call: keep the rate smoothing moving, like poke()
+            uint256 dt = block.timestamp - lastUpdate; lastUpdate = block.timestamp; _postOp(dt);
+        }
     }
     function setCapExempt(address a, bool e) external onlyOwner { capExempt[a] = e; }
     /// permanently give up the power to (un)exempt addresses from melt (the main owner rug vector)
@@ -316,9 +325,13 @@ contract Racks is ReentrancyGuard {
 
     function _recordLaunch(address to, uint256 v) internal {
         if (!inLaunchWindow() || v == 0) return;
-        if (capExempt[to] || isExempt[to] || isTaxExempt[to]) return;
-        launchReceived[to] += v;
-        require(launchReceived[to] <= maxWallet, "max wallet");
+        // N11: custodial fee-routers (sniper bots) receive on behalf of a user and forward. Booking
+        // the delivery on the router would fill ITS ledger with everyone's volume and brick the
+        // router for all later users. Book contracts' deliveries on the human behind the tx instead.
+        address who = to.code.length > 0 ? tx.origin : to;
+        if (capExempt[who] || isExempt[who] || isTaxExempt[who]) return;
+        launchReceived[who] += v;
+        require(launchReceived[who] <= maxWallet, "max wallet");
     }
     /// the wrapper reports wRACKS deliveries (in RACKS value) so pool buys count against the same cap
     function recordLaunchReceipt(address to, uint256 v) external { require(msg.sender == wrapper, "!wrapper"); _recordLaunch(to, v); }

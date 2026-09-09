@@ -30,6 +30,7 @@ contract V2MeltAdversarial is Test {
         k.approve(ROUTER, type(uint256).max); IERC20m(SPY).approve(ROUTER, type(uint256).max);
         IV2Router(ROUTER).addLiquidity(address(k), SPY, 500_000_000 ether, 500 ether, 0, 0, address(this), block.timestamp);
         k.setPair(address(pair));
+        k.enableTrading(); vm.warp(block.timestamp + 1 hours + 1);   // arm launch, then past the window
         deal(SPY, user, 500 ether); vm.prank(user); IERC20m(SPY).approve(ROUTER, type(uint256).max);
         vm.prank(user); k.approve(ROUTER, type(uint256).max);
     }
@@ -58,7 +59,7 @@ contract V2MeltAdversarial is Test {
     // B) the pool melt must not double-count: pair balance follows the index exactly
     function testPoolMeltMatchesIndex() public onFork {
         uint256 bal0 = k.balanceOf(address(pair));
-        uint256 idx0 = k.index();
+        uint256 idx0 = k.pairIndex();   // the pool melts from ITS last-melted index, not the global one
         vm.warp(block.timestamp + 3 days);
         k.meltPool();
         uint256 expected = bal0 * k.index() / idx0;

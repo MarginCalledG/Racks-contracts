@@ -177,6 +177,37 @@ anfasst und sync() nicht in Racks zurueckruft.
 Restrisiko (bekannt, klein): zwischen Epochenwechsel und erstem meltPool ist der Pool-Preis 0,09-0,15%
 zu niedrig — dieselbe Arb-Klasse wie AMPL-Syncs; die Bounty haelt das Fenster praktisch geschlossen.
 
+## Runde 7 — Antwort auf das externe Audit (N-Serie) — test/AuditN.t.sol
+Alle vier per PoC BESTAETIGT, gefixt, Regressionstest.
+**N1 (kritisch) — `renounceExemptControl()` war ein Flag, das niemand liest.** setExempt prueft es
+nicht; nach dem Renounce konnte der Owner das Pair de-exempten — genau der Rug-Vektor, den AUDIT.md
+als "permanent abgeschaltet" beschrieb. Mein Fix aus Runde 4 hatte die Datei nie erreicht und ich
+hatte ihn nie getestet. Fix: `require(!exemptControlRenounced)` in setExempt + Test.
+**N2 (hoch) — kein Trading-Gate.** PoC: zwischen addLiquidity und enableTrading nahm ein Sniper 20%
+der Supply, launchReceived blieb 0. Fix: solange `tradingStart == 0` reverten alle Pool<->Wallet-
+Transfers ("not started"); tax-exempte Adressen (Deployer) duerfen weiter seeden.
+**N11 (hoch) — kumulativer Cap brickte custodial Bot-Router.** PoC: drei Nutzer a 0.3% durch
+denselben Fee-Router, der vierte revertet, obwohl jedes Nutzer-Ledger 0 ist. Fix: bei
+`to.code.length > 0` bucht das Ledger auf `tx.origin` statt auf den Router.
+**N3 (mittel) — sequenzielles Settle unbegrenzt.** Gemessen: 81 Mio. Gas nach 3.000 leeren Epochen
+(schlimmer als gemeldet). Fix: O(1) — `settled(e)` ist eine View (`e < settledThrough || _map[e]`),
+und nur Epochen mit Angriffen landen in `activeEpochs` mit Cursor. Jetzt 79.556 Gas, unabhaengig vom Alter.
+Niedrig: relock nach Auto-Prune kassierte die USDG-Fee fuer eine geloeschte Position (Fix: erst
+settlen, dann pruefen, dann Fee); externes meltPool schreibt jetzt die Glaettung fort wie poke.
+Repo: Deploy.s.sol komplett neu auf v2 (siehe unten); V2EndToEnd.t.sol und RacksOnRealV2.t.sol
+entfernt (testeten das alte Modell; V2AtomicMelt deckt das echte ab) — der vom Auditor gefundene
+Prank-Bug darin ist damit gegenstandslos. Der gemeldete Compile-Fehler (WRacksTax.t.sol) kam aus
+einem aelteren Zip; die Datei war hier bereits geloescht.
+
+**OFFEN — Entscheidungen des Owners (N4/N5):**
+- N4: LP-Operationen werden wie Trades besteuert (Pair->LP = Buy, LP->Pair = Sell). Dritte werden
+  so keine Liquiditaet stellen. Gleichzeitig ist genau das die Bremse gegen den LP-Melt-Dodge
+  (Liquiditaet im Fenster rausnehmen, un-gemeltet, danach zurueck). Entweder nur eigene LP fahren,
+  oder LP-Exemption plus Bedingung `pairIndex == index()` fuer Pair->Wallet-Transfers.
+- N5: Bounty 0.25% des Epochen-Melts ist bei kleinem Pool nur Cent-Betraege. Wenn Bots den Job
+  wirklich uebernehmen sollen, braucht es einen absoluten Mindestbetrag (bewusst als LP-Kosten).
+  Aktuell traegt die Self-Heal-Logik in _preOp den Loewenanteil.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

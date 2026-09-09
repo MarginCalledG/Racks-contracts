@@ -35,7 +35,8 @@ contract V2AtomicMelt is Test {
         k.setExempt(address(pair), true);       // pair holds a NOMINAL balance (no lazy melt)
         k.approve(ROUTER, type(uint256).max); IERC20m(SPY).approve(ROUTER, type(uint256).max);
         IV2Router(ROUTER).addLiquidity(address(k), SPY, 500_000_000 ether, 500 ether, 0, 0, address(this), block.timestamp);
-        k.setPair(address(pair));               // registers + isDex + capExempt + pairIndex
+        k.setPair(address(pair));
+        k.enableTrading(); vm.warp(block.timestamp + 1 hours + 1);   // arm launch, then past the window               // registers + isDex + capExempt + pairIndex
         for (uint i; i < 8; i++) { address u = address(uint160(0x4000 + i)); W.push(u);
             deal(SPY, u, 100 ether); vm.prank(u); IERC20m(SPY).approve(ROUTER, type(uint256).max);
             vm.prank(u); k.approve(ROUTER, type(uint256).max); }

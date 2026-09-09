@@ -39,9 +39,22 @@ ueber TwapOracle (jetzt auf dem echten v2-Pair-Interface: getReserves/token0).
 Ohne Orakel greift BASE_TAX_BPS = 400 statt 0 (eine fehlende Quelle darf die Tax nie abschalten).
 USDG-Weg existiert auf v2: USDG->SPY->RACKS in einer TX ueber den Standard-Router, kein Zap noetig.
 
+### Deploy (script/Deploy.s.sol — NEU auf v2, gegen RH-Fork getestet)
+Reihenfolge ist zwingend und wird per require geprueft:
+1. Token/Vault/Agents + Wiring, mint, renounceMint
+2. Pair anlegen, `setExempt(pair)` (Pflicht vor setPair), Liquiditaet seeden — das Trading-Gate ist
+   noch zu, nur tax-exempte Adressen (Deployer) duerfen Pool-Token bewegen
+3. `setPair(pair)` (setzt isDex + capExempt + pairIndex) + TwapOracle
+4. `enableTrading()` ZULETZT -> Launch-Stunde startet
+Selbstchecks am Ende: Pair melt-exempt, setPair gesetzt, isDex, capExempt, Tax-Wallet melt-exempt,
+Orakel verdrahtet, Mint renounced, Trading an, maxWallet > 0.
+Fork-Test test/v4/DeployScript.t.sol fuehrt das echte Skript aus und handelt danach: Kauf in der
+Launch-Stunde OK, zweiter Kauf ueber dem Cap revertet, Kauf+Verkauf ueber einen Melt-Epochenwechsel
+ohne Keeper OK.
+NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `renounceExemptControl()`.
+
 ## OFFEN
 1. v4-Schicht aus dem Repo entfernen (Contracts + Tests), sobald v2 final bestaetigt ist.
-2. Deploy-Skript NEU auf v2: Pair anlegen, setExempt(pair), setPair, Orakel, Liquiditaet, enableTrading.
 3. VRF: Chainlink VRF laeuft NICHT auf RH (nur Data Feeds/Streams/CCIP). Empfehlung: EIN Zufalls-Seed
    pro Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die
    ganze Klasse der VRF-Timing-Exploits. Entscheidung offen.
