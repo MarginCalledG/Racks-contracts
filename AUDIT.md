@@ -171,6 +171,9 @@ Angegriffen: Bounty-Farming (100 Wiederholungscalls zahlen 0), Doppelzaehlung de
 (folgt exakt dem Index-Verhaeltnis), LP-Ausstieg nach 5 Tagen Melt (funktioniert, keine Insolvenz),
 Sandwich um den Melt herum (Round-Trip verliert Geld), setPair ohne Exempt (revertet),
 Supply-Wirkung (Pool-Melt verkleinert die Supply wirklich). Keine Exploits.
+Korrektur (Runde 9): meltPool ist fuer externe Caller NICHT epochen-gegatet — es meltet zeitbasiert
+ab der ersten Sekunde. Unschaedlich (Melt+Sync atomar, Gesamtmelt aufrufunabhaengig), aber die frueher
+behauptete Eigenschaft "Balance innerhalb einer Epoche konstant" gilt nur fuer den Self-Call.
 Bewusste Abwaegung: meltPool traegt KEIN nonReentrant, weil der externe Self-Call aus _preOp genau
 dann komplett zurueckrollen soll, wenn das Pair gelockt ist. Sicher, weil meltPool nur Pair-State
 anfasst und sync() nicht in Racks zurueckruft.
@@ -236,6 +239,17 @@ Exemptions; `activeEpochs` waechst ~1.100 Eintraege/Jahr (Cursor-basiert, unkrit
 **OFFEN (Owner):** Pot-Seed. Das Skript schickt 100% der Supply in den Pool -> Casino startet mit
 Pot 0. Wenn am Launch geraidet werden soll, braucht es Supply-Reserve fuer `fundPot` oder frueh
 Kurz-Locker. Widerspricht der bisherigen Doku und ist bewusst zu entscheiden.
+
+## Runde 9 — Praezision und Doku
+- **Zwei Quellen fuer dieselbe Rate** (F_FF0/F_FF1 vs. _factorEnds(0)) wichen um ~4e10 Wei auf 1e27 ab;
+  ratePerDayBps() und ratePerDayBpsFor(0) konnten im letzten Bps-Digit auseinanderlaufen. Vereinheitlicht:
+  die Faktortabelle ist jetzt die einzige Quelle, F_FF0/F_FF1 entfernt. Test: testSingleRateSource.
+- **Abgelaufene Locks drueckten den Free Float** fuer alle, bis sie unter MIN_LOCK geprunt wurden (bei
+  einer grossen vergessenen Position ueber Monate). `expiredPrincipal` wird jetzt mitgefuehrt und aus
+  lockedSupply herausgerechnet. Gemessen: Rate springt nach Ablauf von 623 auf 690 bps/d zurueck.
+- Doppelte Bedingung in _preOp entfernt; README auf die aktuelle Architektur umgeschrieben (beschrieb
+  noch WRacks als Fallback); STATUS-Verweis auf den geloeschten RacksDirectInPool-Test korrigiert.
+- Pot-Formel klargestellt: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d, kein W-Term.
 
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).

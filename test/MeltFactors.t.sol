@@ -81,4 +81,29 @@ contract MeltFactors is Test {
         assertLt(k.ratePerDayBpsFor(2), k.ratePerDayBpsFor(1));
         assertLt(k.ratePerDayBpsFor(1), k.ratePerDayBpsFor(0));
     }
+
+    // one source of truth: the base rate and the unlocked factor row must be bit-identical
+    function testSingleRateSource() public view {
+        assertEq(k.perSecFactor(), k.perSecFactorFor(k.P_UNLOCKED()), "two rate sources diverged");
+        assertEq(k.ratePerDayBps(), k.ratePerDayBpsFor(k.P_UNLOCKED()));
+    }
+
+    // an expired, forgotten position must not depress the free float for everyone
+    function testExpiredPrincipalLeavesLockedSupply() public {
+        usdg.mint(address(this), 1000 ether); usdg.approve(address(v), type(uint256).max);
+        k.approve(address(v), type(uint256).max);
+        v.lock(0, 50_000_000 ether);                       // half the supply, 1-day tier
+        vm.warp(block.timestamp + 12 hours); v.harvest(address(this), 0);
+        uint256 rateWhileLocked = k.ratePerDayBpsFor(0);
+        assertEq(v.expiredPrincipal(), 0, "not expired yet");
+
+        vm.warp(block.timestamp + 2 days);                 // expired, nobody unlocked
+        v.harvest(address(this), 0);
+        assertGt(v.expiredPrincipal(), 0, "expired principal is tracked");
+        vm.warp(block.timestamp + 2 days); k.poke();       // let the smoothing follow
+        uint256 rateAfterExpiry = k.ratePerDayBpsFor(0);
+        emit log_named_uint("rate while locked (bps/d)", rateWhileLocked);
+        emit log_named_uint("rate after expiry (bps/d)", rateAfterExpiry);
+        assertGt(rateAfterExpiry, rateWhileLocked, "expired supply counts as free float again");
+    }
 }

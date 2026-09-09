@@ -16,8 +16,7 @@ contract Racks is ReentrancyGuard {
     uint256 internal constant RAY = 1e27;
     uint256 public constant TAU = 86400; // 24h smoothing window
 
-    uint256 public constant F_FF0 = 999999503385528269210124288; // per-sec retention @ 4.2%/day (FF=0)
-    uint256 public constant F_FF1 = 999999172500322683774304256; // per-sec retention @ 6.9%/day (FF=1)
+    // (rate constants live in _factorEnds below — one table for every position type)
 
     // ---- melt factors per position type (rate = r_w * factor) ----
     // 0 UNLOCKED 1.0 | 1 LP 0.5 | 2 LOCK_1D 0.3 | 3 LOCK_3D 0.2 | 4 LOCK_14D 0.1
@@ -123,7 +122,7 @@ contract Racks is ReentrancyGuard {
         indexCheckpoint = RAY;
         lastUpdate = block.timestamp;
         smoothedFFRay = RAY;      // starts at max float
-        perSecFactor = F_FF1;
+        perSecFactor = 999999172500322643440619871;   // FF = 1 at deploy
         startTime = block.timestamp;
         epochLength = 1800;       // 30-min epochs by default
     }
@@ -151,7 +150,8 @@ contract Racks is ReentrancyGuard {
     }
 
     function _perSecFromFF(uint256 ff) internal pure returns (uint256) {
-        return F_FF0 - ((F_FF0 - F_FF1) * ff / RAY);
+        (uint256 f0, uint256 f1) = _factorEnds(P_UNLOCKED);   // single source of truth
+        return f0 - ((f0 - f1) * ff / RAY);
     }
 
     /// smoothed daily debase in bps (420..690)
@@ -167,7 +167,7 @@ contract Racks is ReentrancyGuard {
         // not yet in the pair when it syncs (otherwise the router would compute amountIn == 0).
         // A locked pair (we are inside a swap) makes this revert; the catch rolls it back untouched.
         address p = pair;
-        if (p != address(0) && (e > pairEpoch || uint32(epochNow()) > pairEpoch)) { try this.meltPool() {} catch {} }
+        if (p != address(0) && e > pairEpoch) { try this.meltPool() {} catch {} }
         dt = block.timestamp - lastUpdate;
         lastUpdate = block.timestamp;
     }

@@ -20,8 +20,12 @@ Aenderungen ggue. dem alten Modell:
 - Die Lock-Bleeds sind nicht mehr fix (2,0 / 1,5 / 0 %/d), sondern an r_w gekoppelt.
 - **Die 14d-Stufe ist nicht mehr melt-frei** (0,1x statt 0) — und speist damit erstmals auch den Pot.
   Damit haengt das Casino nicht mehr allein an Kurz-Lockern (loest die Pot-Starvation aus der 2-Wochen-Sim).
-- **Das Pair schmilzt mit 0,5x** statt voll; `meltPool` rechnet zeitbasiert (pairLastMelt) und wird
-  weiterhin nur beim Epochenwechsel getriggert, damit die Balance innerhalb einer Epoche konstant bleibt.
+- **Das Pair schmilzt mit 0,5x** statt voll; `meltPool` rechnet zeitbasiert ab pairLastMelt.
+  Der SELF-Call aus _preOp feuert nur beim Epochenwechsel (Gaskosten); extern ist meltPool
+  permissionless und meltet ab der ersten Sekunde. Die Balance ist innerhalb einer Epoche also NICHT
+  konstant — das ist unschaedlich, weil Melt und Sync atomar sind (kein K-Revert moeglich) und der
+  Gesamtmelt unabhaengig von der Aufrufhaeufigkeit ist. Die Atomaritaet ist die tragende Eigenschaft,
+  nicht die Epochen-Diskretisierung.
 - Abgelaufene Locks schmelzen unveraendert mit Faktor 1,0 und werden GEBRANNT (nicht in den Pot).
 Reihenfolge bleibt garantiert: 14d < 3d < 1d < LP < unlocked (Test testLockingBeatsHolding).
 
@@ -29,8 +33,8 @@ Reihenfolge bleibt garantiert: 14d < 3d < 1d < LP < unlocked (Test testLockingBe
 Auf RH-Mainnet gegen die ECHTE Uniswap v2 verifiziert (Factory 0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f,
 Router02 0x89e5DB8B5aA49aA85AC63f691524311AEB649eba).
 
-Warum nicht v3/v4: beide leiten Reserven aus L und Preis ab und haben kein sync(). Fork-Beweis
-(test/v4/RacksDirectInPool.t.sol): nach 7 Tagen Melt haelt der PoolManager 1.818 statt 3.000 RACKS,
+Warum nicht v3/v4: beide leiten Reserven aus L und Preis ab und haben kein sync(). Fork-Beweis (in Runde 6 gefahren, Test seither
+mit der v4-Schicht entfernt; Ergebnis in AUDIT.md dokumentiert): nach 7 Tagen Melt haelt der PoolManager 1.818 statt 3.000 RACKS,
 der Pool rechnet weiter mit 3.000 -> Melt kommt NICHT im Preis an und removeLiquidity revertet
 (insolvent). v3 zusaetzlich ohne Fee-on-Transfer-Router und ohne Hooks.
 
@@ -88,8 +92,11 @@ NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `reno
    `paused = true`; `setPaused(false)` verlangt einen VRF mit Code. Empfehlung: EIN Zufalls-Seed pro
    Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die
    ganze Klasse der VRF-Timing-Exploits. Entscheidung offen — bis dahin bleibt das Casino aus.
-6. Pot-Seed: durch die 14d-Faktoraenderung speisen jetzt ALLE Lock-Stufen den Pot; ein Seed am
-   Launch bleibt trotzdem sinnvoll, solange es noch keine Locker gibt (100% der Supply gehen in den Pool).
+6. Pot-Seed ist NOETIG, nicht optional, wenn am ersten Tag geraidet werden soll. Der Pot speist sich
+   ausschliesslich aus den drei Lock-Bleeds: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d.
+   Unlocked-Melt und Pool-Melt werden GEBRANNT und tragen nichts bei (kein W-Term). Ohne Locker ist
+   der Pot null. Optionen: (a) Supply-Reserve zurueckhalten und `fundPot` am Launch, (b) den W-Term
+   nachruesten (ein Teil des Unlocked-Melts in den Pot statt in den Burn) — Owner-Entscheidung.
 7. renounceExemptControl ist IRREVERSIBEL — danach sind auch noetige Exemptions (neue Vault-Version,
    neue Tax-Wallet) unmoeglich. Bewusst erst nach dem Launch und nach Abwaegung aufrufen.
 4. Externes Audit vor Mainnet.

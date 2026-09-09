@@ -34,9 +34,13 @@ contract CaymanIslands is ReentrancyGuard {
     uint8[3] public POS = [uint8(2), 3, 4];
     uint256 public constant MIN_LOCK = 1_000 ether; // dust floor; expired dust is auto-pruned (F7)
 
-    struct Pos { uint256 principal; uint64 lockedAt; uint64 unlockAt; } // lockedAt doubles as "last settled"
+    struct Pos { uint256 principal; uint64 lockedAt; uint64 unlockAt; bool expiredCounted; } // lockedAt doubles as "last settled"
     mapping(address => Pos[3]) internal _pos;
     uint256 public pot; // settled bleed, raidable by agents
+    /// principal of positions past their unlock time. These melt at the UNLOCKED rate and are free to
+    /// leave, so they must not count as locked supply — otherwise a large forgotten position depresses
+    /// the free float (and the rate) for everyone until it is pruned.
+    uint256 public expiredPrincipal;
 
     // enumerable set of active positions (packed user|tier) so the LIVE pot can be computed and
     // positions can be batch-harvested. swap-and-pop removal.
@@ -137,10 +141,16 @@ contract CaymanIslands is ReentrancyGuard {
         (uint256 payout, uint256 bleedAmt, uint256 meltAmt) = _split(p, b);
         if (bleedAmt > 0) pot += bleedAmt;
         if (meltAmt > 0) racks.burn(meltAmt);                 // real melt: supply shrinks, not pot
+        // keep the expired-principal tally in step before overwriting the position
+        if (p.expiredCounted) expiredPrincipal -= p.principal;
+        bool nowExpired = block.timestamp >= p.unlockAt;
+        if (nowExpired) expiredPrincipal += payout;
+        p.expiredCounted = nowExpired;
         p.principal = payout; p.lockedAt = uint64(block.timestamp);
         if (bleedAmt > 0 || meltAmt > 0) emit Settled(u, b, bleedAmt, meltAmt);
         // F7: expired positions that melted below the dust floor leave the active set (list poisoning)
         if (payout > 0 && payout < MIN_LOCK && block.timestamp >= p.unlockAt) {
+            if (p.expiredCounted) expiredPrincipal -= payout;
             delete _pos[u][b]; _remove(u, b);
             require(racks.transfer(u, payout), "dust");
             return 0;
@@ -161,7 +171,8 @@ contract CaymanIslands is ReentrancyGuard {
 
     function _syncLocked() internal {
         uint256 bal = racks.balanceOf(address(this));
-        racks.setLockedSupply(bal > pot ? bal - pot : 0);     // only user-locked value counts as locked
+        uint256 notLocked = pot + expiredPrincipal;          // pot is protocol-owned, expired is free to leave
+        racks.setLockedSupply(bal > notLocked ? bal - notLocked : 0);
     }
 
     function lock(uint8 b, uint256 amount) external nonReentrant {
@@ -172,6 +183,7 @@ contract CaymanIslands is ReentrancyGuard {
         require(racks.transferFrom(msg.sender, address(this), amount), "pull");
         uint256 received = racks.balanceOf(address(this)) - beforeBal;
         Pos storage p = _pos[msg.sender][b];
+        if (p.expiredCounted) { expiredPrincipal -= p.principal; p.expiredCounted = false; }
         p.principal += received;
         p.lockedAt = uint64(block.timestamp);
         p.unlockAt = uint64(block.timestamp + DURATION[b]);
@@ -183,6 +195,8 @@ contract CaymanIslands is ReentrancyGuard {
     function relock(uint8 b) external nonReentrant {
         require(b < 3 && _pos[msg.sender][b].principal > 0, "none");
         _settle(msg.sender, b);
+        { Pos storage rp = _pos[msg.sender][b];
+          if (rp.expiredCounted) { expiredPrincipal -= rp.principal; rp.expiredCounted = false; } }
         // the settle above may have pruned a dust position and paid it out — do not charge a fee
         // for relocking something that no longer exists
         require(_pos[msg.sender][b].principal > 0, "pruned");
@@ -197,6 +211,7 @@ contract CaymanIslands is ReentrancyGuard {
         require(p.principal > 0, "none");
         require(block.timestamp >= p.unlockAt, "locked");
         uint256 payout = _settle(msg.sender, b);
+        if (_pos[msg.sender][b].expiredCounted) expiredPrincipal -= payout;
         delete _pos[msg.sender][b];
         _remove(msg.sender, b);
         require(racks.transfer(msg.sender, payout), "send");
