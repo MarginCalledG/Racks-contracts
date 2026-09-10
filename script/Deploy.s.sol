@@ -27,6 +27,7 @@ contract DeployScript is Script {
     uint256 constant SUPPLY   = 69_420_000_000 ether;
     uint256 constant SPY_SEED = 6.45 ether;          // ~$5k seed
     uint256 constant RAY      = 1e27;
+    uint256 constant SWAP_THRESHOLD = 1_000_000 ether;   // min accrued tax before a conversion fires
 
     struct Cfg { address me; address vrf; address reserve; address taxWallet; address multisig; address lpDestination; }
 
@@ -49,7 +50,7 @@ contract DeployScript is Script {
         // The agent casino stays PAUSED until a real randomness source exists on this chain.
         // A codeless placeholder would brick mint(); a permissionless mock would hand the pot away.
         IRSAgent agents = new IRSAgent(USDG, address(vault), c.vrf, c.reserve);
-        vault.setAgent(address(agents));
+        vault.setAgent(address(agents));   // FINAL: the pot pointer can never be changed again
         racks.setVault(address(vault));
         racks.setExempt(address(vault), true);      // locked RACKS must not lazy-melt
         racks.setTaxExempt(address(vault), true);
@@ -79,6 +80,10 @@ contract DeployScript is Script {
         IERC20d(SPY).approve(ROUTER, type(uint256).max);
         require(IERC20d(SPY).balanceOf(c.me) >= SPY_SEED, "fund the deployer with SPY first");
         IV2Router(ROUTER).addLiquidity(address(racks), SPY, SUPPLY, SPY_SEED, 0, 0, c.me, block.timestamp + 600);
+
+        // ---- 3b. automatic tax conversion: every sell converts accrued tax RACKS -> SPY -> reserve
+        // (a buy cannot: the pair is locked inside pair.swap(); buy-side tax converts on the next sell)
+        racks.enableAutoSwap(ROUTER, SPY, c.reserve, SWAP_THRESHOLD);
 
         // ---- 4. arm the launch ----
         racks.enableTrading();
@@ -112,6 +117,7 @@ contract DeployScript is Script {
         require(racks.mintRenounced(), "mint not renounced");
         require(racks.tradingStart() != 0, "trading not enabled");
         require(racks.maxWallet() > 0, "launch cap not set");
+        require(racks.autoSwap() && racks.taxWallet() == address(racks), "auto tax swap not wired");
         require(IERC20d(pair).balanceOf(c.me) == 0, "deployer still holds LP");
         require(!racks.isTaxExempt(c.me), "deployer still tax-exempt");
         require(racks.pendingOwner() == c.multisig, "racks handover not started");
@@ -119,6 +125,7 @@ contract DeployScript is Script {
         require(agents.pendingAdmin() == c.multisig, "agents handover not started");
         require(oracle.pendingOwner() == c.multisig, "oracle handover not started");
         require(agents.paused(), "agents must stay paused until VRF is real");
+        require(vault.agent() == address(agents), "agent not set");
 
         deployedRacks = address(racks);
         console.log("RACKS   ", address(racks));
@@ -130,7 +137,10 @@ contract DeployScript is Script {
         console.log("LP sent to  ", c.lpDestination);
         console.log("NEXT: multisig calls acceptOwnership() on ALL FOUR:");
         console.log("       racks, vault, agents, oracle - until then the deployer still controls them");
-        console.log("NEXT: agents stay PAUSED until a real VRF exists (agents.setPaused(false))");
+        console.log("NEXT: agents stay PAUSED until a real VRF exists.");
+        console.log("      Wire it INSIDE the agent: proposeVrf -> 7d -> executeVrf -> setPaused(false)");
+        console.log("      The vault's agent pointer is FINAL and cannot be changed.");
+        console.log("LATER: agents.renounceVrfControl() once the randomness source is settled");
         console.log("LATER: racks.renounceExemptControl() - IRREVERSIBLE, blocks all future exemptions");
     }
 }

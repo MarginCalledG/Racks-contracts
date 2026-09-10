@@ -17,7 +17,6 @@ that raids what the vault bleeds.
 | `IRSAgent.sol` | ERC721 "IRS Agent" casino: pari-mutuel raids on the pot, epoch-based |
 | `TwapOracle.sol` | TWAP + dislocation/impact read off the real v2 pair |
 | `DynamicTax.sol` | Maps TWAP dislocation and trade impact to a tax rate (1%–8%) |
-| `TaxSwapper.sol` | Converts accrued tax RACKS into the reserve asset |
 
 ## Market structure: Uniswap v2, no wrapper
 

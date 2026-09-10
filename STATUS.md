@@ -29,6 +29,24 @@ Aenderungen ggue. dem alten Modell:
 - Abgelaufene Locks schmelzen unveraendert mit Faktor 1,0 und werden GEBRANNT (nicht in den Pot).
 Reihenfolge bleibt garantiert: 14d < 3d < 1d < LP < unlocked (Test testLockingBeatsHolding).
 
+## AUTOMATISCHE TAX-UMWANDLUNG (RACKS -> SPY -> Reserve)
+Die Tax faellt auf dem Token selbst an und wird bei JEDEM VERKAUF automatisch in SPY getauscht und
+an `reserve` geschickt. Kein Keeper, kein TaxSwapper-Contract, kein manueller Schritt.
+**Warum nicht auch beim Kauf:** waehrend `pair.swap()` laeuft, ist das Pair per Reentrancy-Lock
+gesperrt — ein Rueck-Swap darin revertet zwingend. Beim Verkauf schiebt der Router die RACKS erst ins
+Pair und lockt danach; genau dieses Fenster nutzen wir (Standardverfahren aller Tax-Token).
+Kauf-Tax bleibt also kurz auf dem Token liegen und wird beim naechsten Verkauf mitgewandelt.
+Schutzmechanismen:
+- `maxSwapBps` (0.5% der Pair-Reserve pro Umwandlung) deckelt den Preis-Impact; ein Rueckstand kann
+  entstehen, bleibt aber durch den Deckel begrenzt.
+- `swapSlippageBps` (3%) gegen getAmountsOut; scheitert der Swap, faengt try/catch ihn ab —
+  **ein Nutzer-Verkauf darf daran nie scheitern** (Fork-Test deckt das ab).
+- Eigener Reentrancy-Guard: der Router MUSS waehrend der Umwandlung transferFrom auf uns aufrufen,
+  deshalb ist genau dieser Pfad erlaubt (`inSwap`), jeder andere weiterhin blockiert.
+- Die wartende Tax ist melt-exempt und tax-exempt (sie schrumpft nicht und besteuert sich nicht selbst).
+Konfiguration: `enableAutoSwap(router, spy, reserve, threshold)`, `setSwapParams(threshold, maxBps, slipBps)`,
+`setAutoSwap(bool)`. Der frühere TaxSwapper-Contract ist ersatzlos entfernt.
+
 ## ARCHITEKTUR-ENTSCHEIDUNG: Uniswap v2 (kein Wrapper, kein Hook)
 Auf RH-Mainnet gegen die ECHTE Uniswap v2 verifiziert (Factory 0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f,
 Router02 0x89e5DB8B5aA49aA85AC63f691524311AEB649eba).
@@ -63,7 +81,7 @@ Fork-Beweise (test/v4/V2AtomicMelt.t.sol, test/v4/V2MeltAdversarial.t.sol):
 ### Was dadurch entfaellt
 WRacks (Wrapper), TaxHook (v4), Zap, V4Swap, V4Pool, TwapOracleV4, Hook-Mining, wiringOk —
 und mit ihnen die Angriffsflaechen Share-Inflation, Wrapper-Cap-Meldung und Hook-Deploy-Falle.
-Tax laeuft wieder im Token (isDex): Kauf und Verkauf besteuert, Wallet-zu-Wallet frei, dynamisch
+Tax laeuft im Token (isDex): Kauf und Verkauf besteuert, Wallet-zu-Wallet frei, dynamisch
 ueber TwapOracle (jetzt auf dem echten v2-Pair-Interface: getReserves/token0).
 Ohne Orakel greift BASE_TAX_BPS = 400 statt 0 (eine fehlende Quelle darf die Tax nie abschalten).
 USDG-Weg existiert auf v2: USDG->SPY->RACKS in einer TX ueber den Standard-Router, kein Zap noetig.
@@ -81,8 +99,14 @@ eigene TX in einem eigenen Block — deshalb muss JEDES Zwischenfenster gate-ges
    **Die Multisig muss auf allen vieren `acceptOwnership()` rufen** — bis dahin kontrolliert sie der
    Deployer. Der Vault haelt die Einlagen der Locker und den Pot; ihn beim Deployer zu lassen waere
    ein Single-Key-Risiko, unabhaengig davon wie gut der Token gehaertet ist.
-   Agentenwechsel im Vault sind einmalig (`setAgent`) bzw. 48h-timelocked (`proposeAgent`/`executeAgent`),
-   damit Locker einen Wechsel kommen sehen.
+   **Der Agent-Zeiger im Vault ist FINAL.** `setAgent` geht genau einmal (beim Deploy), danach nie
+   wieder — es gibt keinen proposeAgent/executeAgent mehr. Damit existiert KEIN Schluessel, der den
+   Pot umleiten koennte, und unbeanspruchte Gewinne koennen nicht durch eine Migration verfallen.
+   Kein Upgrade-Pfad, bewusst.
+   Austauschbar ist nur die ZUFALLSQUELLE, und zwar im Agenten selbst: `proposeVrf` -> 7 Tage ->
+   `executeVrf`, danach `renounceVrfControl()` als Einbahnstrasse. Machtvergleich: ein Agententausch
+   haette den Pot in einem Call bewegt; eine manipulierte Zufallsquelle kann nur beeinflussen, WER
+   gewinnt — Epoche fuer Epoche, durch die pari-mutuel-Aufteilung gedeckelt und on-chain sichtbar.
 Env: PRIVATE_KEY, VRF_COORDINATOR, RESERVE, TAX_WALLET, MULTISIG, LP_DESTINATION
 Selbstchecks am Ende: Pair melt-exempt, setPair gesetzt, isDex, capExempt, Tax-Wallet melt-exempt,
 Orakel verdrahtet, Mint renounced, Trading an, maxWallet > 0.

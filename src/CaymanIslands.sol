@@ -96,6 +96,7 @@ contract CaymanIslands is ReentrancyGuard {
     event Locked(address indexed u, uint8 tier, uint256 amount, uint256 unlockAt);
     event Unlocked(address indexed u, uint8 tier, uint256 amount);
     event Settled(address indexed u, uint8 tier, uint256 bleedToPot, uint256 meltBurned);
+    event AgentSet(address indexed agent);
 
     modifier onlyOwner() { require(msg.sender == owner, "!owner"); _; }
 
@@ -105,24 +106,17 @@ contract CaymanIslands is ReentrancyGuard {
         FEE = [3 * u, 5 * u, 10 * u];
     }
 
-    // The agent may draw the whole pot, so swapping it is timelocked: lockers get AGENT_DELAY to
-    // exit before an unknown contract can touch their bleed. The first agent (deploy time, empty pot)
-    // may be set immediately.
-    uint256 public constant AGENT_DELAY = 48 hours;
-    address public pendingAgent;
-    uint256 public pendingAgentAt;
-    event AgentProposed(address agent, uint256 executableAt);
-
+    /// The agent is set ONCE, at deploy, and can never be changed again. It is the only address
+    /// allowed to draw from the pot, so a swappable pointer would be a permanent "one call drains
+    /// everything" power over the lockers' bleed. There is no upgrade path and none is wanted:
+    /// randomness is changed inside the agent (see IRSAgent.proposeVrf), which can only influence
+    /// who wins, never move the pot wholesale.
     function setAgent(address r) external onlyOwner {
-        require(agent == address(0), "use proposeAgent");   // only while none is set (deploy)
+        require(agent == address(0), "agent is final");
+        require(r != address(0), "zero");
         agent = r;
+        emit AgentSet(r);
     }
-    function proposeAgent(address r) external onlyOwner { pendingAgent = r; pendingAgentAt = block.timestamp + AGENT_DELAY; emit AgentProposed(r, pendingAgentAt); }
-    function executeAgent() external onlyOwner {
-        require(pendingAgent != address(0) && block.timestamp >= pendingAgentAt, "timelock");
-        agent = pendingAgent; pendingAgent = address(0); pendingAgentAt = 0;
-    }
-    function cancelAgent() external onlyOwner { pendingAgent = address(0); pendingAgentAt = 0; }
 
     address public pendingOwner;
     function transferOwnership(address n) external onlyOwner { pendingOwner = n; }

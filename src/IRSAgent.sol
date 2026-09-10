@@ -29,7 +29,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     IERC20r public immutable usdg;
     ICaymanPot public immutable vault;
-    IVRFCoordinatorR public immutable vrf;
+    IVRFCoordinatorR public vrf;
     address public reserve;
     address public admin;
     uint256 public immutable startTime;
@@ -60,6 +60,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     uint256 public constant SETTLE_GRACE = 10 minutes; // E1/E2 fix: let VRF results land before settling
     mapping(uint32 => uint256) public pendingAttacks;   // unfulfilled attack requests per epoch
     mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
+    uint256 public constant DUST = 1e9;   // 1e-9 RACKS: below any economically claimable prize
     uint32 public constant CLAIM_WINDOW = 90;          // epochs (~30 days) to claim before sweep
 
     event Minted(uint256 indexed id, address indexed owner);
@@ -209,6 +210,13 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         if (payout > allocatedPot) payout = allocatedPot;
         allocatedPot -= payout;
         epochUnclaimed[e] -= payout;
+        // Pari-mutuel rounding leaves a few wei per epoch. Without clearing it, allocatedPot never
+        // returns to 0 and the vault's migration guard (which requires "owes nothing") would be
+        // blocked forever by dust. The remainder simply stays in the pot, unallocated.
+        if (epochUnclaimed[e] > 0 && epochUnclaimed[e] <= DUST) {
+            allocatedPot -= epochUnclaimed[e];
+            epochUnclaimed[e] = 0;
+        }
         vault.drawPot(msg.sender, payout);
         emit Claimed(id, e, payout);
     }
@@ -239,6 +247,38 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     }
 
     /// unpause only once a real VRF is wired; refuses a codeless placeholder outright
+    // ---- randomness source ----
+    // The vault's agent pointer is permanent, so the ONLY thing that ever needs replacing is the
+    // randomness source (RH had none at launch). Timelocked so players see a change coming, and
+    // renounceable so it can be closed for good once a real VRF is settled.
+    uint256 public constant VRF_DELAY = 7 days;
+    address public pendingVrf;
+    uint256 public pendingVrfAt;
+    bool public vrfFinal;
+    event VrfProposed(address vrf, uint256 executableAt);
+    event VrfChanged(address indexed oldVrf, address indexed newVrf);
+    event VrfFinalised();
+
+    function proposeVrf(address v_) external onlyAdmin {
+        require(!vrfFinal, "vrf final");
+        require(v_.code.length > 0, "vrf has no code");
+        pendingVrf = v_; pendingVrfAt = block.timestamp + VRF_DELAY;
+        emit VrfProposed(v_, pendingVrfAt);
+    }
+    function executeVrf() external onlyAdmin {
+        require(!vrfFinal, "vrf final");
+        require(pendingVrf != address(0) && block.timestamp >= pendingVrfAt, "timelock");
+        emit VrfChanged(address(vrf), pendingVrf);
+        vrf = IVRFCoordinatorR(pendingVrf); pendingVrf = address(0); pendingVrfAt = 0;
+    }
+    function cancelVrf() external onlyAdmin { pendingVrf = address(0); pendingVrfAt = 0; }
+    /// one-way: give up the ability to ever change the randomness source again
+    function renounceVrfControl() external onlyAdmin {
+        require(address(vrf).code.length > 0, "no real vrf yet");
+        vrfFinal = true; pendingVrf = address(0); pendingVrfAt = 0;
+        emit VrfFinalised();
+    }
+
     function setPaused(bool p_) external onlyAdmin {
         if (!p_) require(address(vrf).code.length > 0, "vrf has no code");
         paused = p_;

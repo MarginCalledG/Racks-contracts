@@ -32,21 +32,19 @@ contract AuditS is Test {
         vm.warp(block.timestamp + 12 hours); v.harvest(locker, 0);
     }
 
-    // S1 BLOCKED: the agent can only be set once, swapping it is timelocked, and every contract
-    // uses 2-step ownership (the deploy script hands all four to the multisig).
+    // S1 BLOCKED: the vault's agent pointer is FINAL and every contract uses 2-step ownership
+    // (the deploy script hands all four to the multisig), so no key can redirect the pot.
     function testS1_VaultCannotBeDrainedByOwner() public {
         uint256 pot = v.potBalance();
         assertGt(pot, 0);
         Drainer d = new Drainer();
-        vm.expectRevert(bytes("use proposeAgent")); v.setAgent(address(d));   // one-shot
-        v.proposeAgent(address(d));
-        vm.expectRevert(bytes("timelock")); v.executeAgent();                 // 48h notice for lockers
+        vm.expectRevert(bytes("agent is final")); v.setAgent(address(d));
         assertEq(v.potBalance(), pot, "pot untouched");
-        // ownership is 2-step on all three neighbours, so a handover cannot be faked
+        // ownership is 2-step, so a handover cannot be faked
         v.transferOwnership(multisig); ag.transferOwnership(multisig);
         assertEq(v.pendingOwner(), multisig); assertEq(ag.pendingAdmin(), multisig);
         vm.prank(multisig); v.acceptOwnership();
-        vm.expectRevert(bytes("!owner")); v.proposeAgent(address(d));         // deployer is out
+        vm.expectRevert(bytes("!owner")); v.setReserve(address(1));   // deployer is out
     }
 
     function testS1_Unused() internal {

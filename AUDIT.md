@@ -268,6 +268,54 @@ vollschreiben koennen. Ersatzlos geloescht.
 Operativ uebernommen: USDG (Paxos) hat eine Freeze-Liste — `reserve` darf keine einfrierbare Adresse
 sein, sonst reverten lock/mint/feed; `setReserve` ist der Ausweg. Steht in STATUS.md.
 
+## Runde 11 — Migrationspfad (M1)
+**M1 bestaetigt und gefixt.** PoC: Alice gewinnt 34.740 RACKS und claimt nicht; der Owner migriert
+ueber den 48h-Timelock; danach revertet ihr Claim (der alte Agent darf kein drawPot mehr), und der
+neue Agent startet mit allocatedPot == 0 und verteilt DASSELBE Geld erneut.
+Fix: `executeAgent` verlangt, dass der alte Agent nichts mehr schuldet (`allocatedPot() == 0`), also
+alle Gewinne abgeholt oder via sweepStale freigegeben sind — das passt zum Timelock-Gedanken.
+Fail-closed: ein Agent, dessen Buecher nicht lesbar sind, gilt als schuldend. Der Code-Check muss
+EXPLIZIT sein, weil ein `try` auf eine codelose Adresse schon an Soliditys extcodesize-Pruefung
+revertet, bevor der catch greift (derselbe Fallstrick wie bei W5).
+Dabei ein Folgeproblem gefunden, das der strikte Check erst sichtbar machte: pari-mutuel-Rundung
+liess **1 Wei** pro Epoche in allocatedPot stehen — die Migration waere dauerhaft an Staub blockiert
+gewesen. `claim` schliesst einen Epochen-Topf jetzt sauber, sobald der Rest unter DUST (1e9 wei)
+faellt; der Rest bleibt unalloziert im Pot.
+Ergaenzt: `forceExecuteAgent` als Notausgang nach FORCE_DELAY (30 Tage ab Vorschlag), damit ein
+gebrickter Agent das Protokoll nicht fuer immer festhaelt — offene Preise gehen auf diesem Pfad
+verloren, deshalb der lange Vorlauf und ein Event. `AgentChanged(old,new,forced)` und
+`AgentCancelled` werden jetzt emittiert.
+Kommentar korrigiert: der Timelock gibt NICHT Lockern Zeit zum Aussteigen (drawPot bewegt nur `pot`,
+nie Principal) — er schuetzt Praemienberechtigte, deren Anspruch in den Buechern des alten Agenten steht.
+
+## Runde 12 — Agent-Zeiger eingefroren (Owner-Entscheidung)
+Statt M1 nur abzusichern, wurde die Faehigkeit ganz entfernt: `setAgent` ist einmalig, es gibt kein
+proposeAgent/executeAgent/forceExecuteAgent mehr. Damit ist M1 gegenstandslos (keine Migration =
+keine gestrandeten Preise), und der Vault hat keinen Schluessel mehr, der den Pot umleiten kann —
+die staerkste Form von S1.
+Voraussetzung dafuer: `vrf` in IRSAgent war `immutable`, der Agententausch war also der einzige Weg,
+je eine echte Zufallsquelle anzuschliessen. Das wandert jetzt in den Agenten: `proposeVrf` mit 7-Tage-
+Timelock, `executeVrf`, `renounceVrfControl` als Einbahnstrasse. Verbleibende Owner-Macht ist damit
+strikt kleiner: eine manipulierte Zufallsquelle beeinflusst nur, wer gewinnt (epochenweise, gedeckelt,
+sichtbar), waehrend ein Agententausch den ganzen Pot in einem Call bewegt haette.
+Der M1-Dust-Fix (Epochen-Toepfe schliessen unter DUST) bleibt drin: er verhinderte, dass 1 Wei
+Rundung Buchhaltung dauerhaft offen haelt.
+
+## Runde 13 — Automatische Tax-Umwandlung, TaxSwapper entfernt
+Die Tax wird jetzt IM TOKEN bei jedem Verkauf automatisch in SPY getauscht (an `reserve`).
+Ein Kauf kann das nicht: `pair.swap()` haelt den Reentrancy-Lock, ein Rueck-Swap darin revertet
+zwingend — Kauf-Tax wandert beim naechsten Verkauf mit. Fork-getestet gegen den echten RH-Router.
+Sicherheitsrelevante Punkte dieser Aenderung (Audit-Schwerpunkt):
+- Eigener Reentrancy-Guard: der Router MUSS waehrend der Umwandlung transferFrom auf uns aufrufen,
+  deshalb ist genau dieser Pfad ueber `inSwap` erlaubt, jeder andere bleibt blockiert.
+- `try/catch` um den Swap: eine fehlschlagende Umwandlung darf einen Nutzer-Verkauf nie kippen
+  (Test erzwingt den Fall mit 0 bps Slippage-Toleranz).
+- `maxSwapBps` = 0.5% der Pair-Reserve pro Umwandlung deckelt den Preis-Impact; der Rueckstand ist
+  dadurch begrenzt, nicht unbegrenzt.
+- Die wartende Tax ist melt- und tax-exempt (schrumpft nicht, besteuert sich nicht selbst).
+`TaxSwapper.sol` und sein Test sind ersatzlos entfernt (Contract, Tests, Deploy-Wiring, Doku).
+Clean-Clone-Build gruen: 100 normale + 18 Fork-Tests.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

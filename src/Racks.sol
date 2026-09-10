@@ -5,6 +5,11 @@ import {RayMath} from "./RayMath.sol";
 import {ReentrancyGuard} from "./ReentrancyGuard.sol";
 
 interface IPairSync { function sync() external; }
+interface IV2Router {
+    function getAmountsOut(uint256, address[] calldata) external view returns (uint256[] memory);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[] calldata,address,uint256) external;
+}
+interface IERC20Min { function balanceOf(address) external view returns (uint256); }
 
 interface ITaxOracle {
     function update() external;
@@ -13,6 +18,11 @@ interface ITaxOracle {
 
 /// @title Racks (Stage 1, hardened) — demurrage token, free-float-coupled rate, 24h-smoothed
 contract Racks is ReentrancyGuard {
+    uint256 private _entered;
+    bool internal inSwap;
+    /// Re-entry is allowed ONLY while we are inside our own tax swap (the router necessarily calls
+    /// transferFrom on us to move RACKS into the pair). Everything else is blocked as before.
+    modifier guarded() { require(_entered == 0 || inSwap, "reentrant"); _entered++; _; _entered--; }
     uint256 internal constant RAY = 1e27;
     uint256 public constant TAU = 86400; // 24h smoothing window
 
@@ -94,6 +104,21 @@ contract Racks is ReentrancyGuard {
     // total, not a balance snapshot, so selling or moving tokens away cannot reset it.
     mapping(address => uint256) public launchReceived;
     mapping(address => bool) public capExempt;   // routers/infra that hold tokens transiently
+
+    // ---- automatic tax conversion (RACKS -> SPY -> reserve) ----
+    // Tax accrues on the token itself and is swapped out on SELLS. A buy cannot do it: the pair is
+    // locked inside pair.swap(), so any swap-back there would revert. On a sell the router moves the
+    // seller's RACKS into the pair BEFORE locking, so we can convert in that window — which is what
+    // every tax token does. Buy-side tax is therefore converted on the next sell, not stranded.
+    address public swapRouter;
+    address public swapSpy;
+    address public swapReserve;
+    uint256 public swapThreshold;        // min accrued RACKS before a conversion fires
+    uint256 public maxSwapBps = 50;      // cap one conversion at 0.5% of the pair's RACKS reserve
+    uint256 public swapSlippageBps = 300;
+    bool public autoSwap;
+    event TaxSwapped(uint256 racksIn, uint256 spyOut);
+    event TaxSwapFailed(uint256 racksIn);
 
     // ---- pool melt (v2) ----
     // The pair is melt-EXEMPT (nominal balance, no lazy melt). Its melt is applied explicitly and
@@ -210,11 +235,11 @@ contract Racks is ReentrancyGuard {
         }
     }
 
-    function transfer(address to, uint256 amount) external nonReentrant returns (bool) {
+    function transfer(address to, uint256 amount) external guarded returns (bool) {
         _move(msg.sender, to, amount); return true;
     }
 
-    function transferFrom(address from, address to, uint256 amount) external nonReentrant returns (bool) {
+    function transferFrom(address from, address to, uint256 amount) external guarded returns (bool) {
         uint256 a = allowance[from][msg.sender];
         require(a >= amount, "allowance");
         if (a != type(uint256).max) allowance[from][msg.sender] = a - amount;
@@ -244,6 +269,8 @@ contract Racks is ReentrancyGuard {
         if (tradingStart == 0 && (isDex[from] || isDex[to])) {
             require(isTaxExempt[from] || isTaxExempt[to], "not started");
         }
+        // convert accrued tax on SELLS, before the seller's RACKS reach the pair
+        if (autoSwap && !inSwap && isDex[to] && !isTaxExempt[from]) _swapTax();
         uint256 bps = _taxBps(from, to, amount);
         uint256 removed = _debit(from, amount);
         uint256 tax = removed * bps / 10000;
@@ -386,6 +413,54 @@ contract Racks is ReentrancyGuard {
     function setDex(address a, bool v) external onlyOwner { isDex[a] = v; }
     function setTaxExempt(address a, bool v) external onlyOwner { isTaxExempt[a] = v; }
     function setTaxWallet(address w) external onlyOwner { taxWallet = w; }
+
+    /// Turn on automatic conversion. taxWallet is pointed at the token itself so the tax lands here
+    /// and can be swapped; SPY proceeds go straight to `reserve`.
+    function enableAutoSwap(address router_, address spy_, address reserve_, uint256 threshold_) external onlyOwner {
+        require(router_.code.length > 0 && spy_.code.length > 0, "no code");
+        require(reserve_ != address(0) && threshold_ > 0, "bad cfg");
+        swapRouter = router_; swapSpy = spy_; swapReserve = reserve_; swapThreshold = threshold_;
+        taxWallet = address(this);
+        isExempt[address(this)] = true;      // accrued tax must not melt while it waits
+        isTaxExempt[address(this)] = true;   // our own conversion is not a taxable trade
+        capExempt[address(this)] = true;
+        autoSwap = true;
+    }
+    function setAutoSwap(bool on) external onlyOwner { autoSwap = on; }
+    function setSwapParams(uint256 threshold_, uint256 maxBps_, uint256 slipBps_) external onlyOwner {
+        require(maxBps_ <= 500 && slipBps_ <= 1000, "bounds");
+        swapThreshold = threshold_; maxSwapBps = maxBps_; swapSlippageBps = slipBps_;
+    }
+
+    /// convert accrued tax; never allowed to break the user's trade, hence try/catch
+    function _swapTax() internal {
+        uint256 amt = balanceOf(address(this));
+        if (amt < swapThreshold) return;
+        uint256 reserveRacks = balanceOf(pair);
+        uint256 cap = reserveRacks * maxSwapBps / 10000;      // bound the price impact
+        if (cap == 0) return;
+        if (amt > cap) amt = cap;
+        inSwap = true;
+        try this.executeTaxSwap(amt) returns (uint256 out) { emit TaxSwapped(amt, out); }
+        catch { emit TaxSwapFailed(amt); }
+        inSwap = false;
+    }
+
+    /// external so a failure rolls back only the swap, never the user's transfer
+    function executeTaxSwap(uint256 amt) external returns (uint256 out) {
+        require(msg.sender == address(this), "!self");
+        address[] memory path = new address[](2);
+        path[0] = address(this); path[1] = swapSpy;
+        uint256[] memory q = IV2Router(swapRouter).getAmountsOut(amt, path);
+        uint256 minOut = q[1] * (10000 - swapSlippageBps) / 10000;
+        allowance[address(this)][swapRouter] = amt; emit Approval(address(this), swapRouter, amt);
+        uint256 before = IERC20Min(swapSpy).balanceOf(swapReserve);
+        IV2Router(swapRouter).swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amt, minOut, path, swapReserve, block.timestamp
+        );
+        out = IERC20Min(swapSpy).balanceOf(swapReserve) - before;
+        require(out >= minOut, "slippage");
+    }
     function setTaxOracle(address o) external onlyOwner { taxOracle = o; }
 
     function setLockedSupply(uint256 L) external {

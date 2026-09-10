@@ -6,7 +6,6 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {TwapOracle} from "../src/TwapOracle.sol";
-import {TaxSwapper} from "../src/TaxSwapper.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockVRF} from "./MockVRF.sol";
 import {MockPair} from "./MockPair.sol";
@@ -14,9 +13,10 @@ import {MockRouter, MockPrice} from "./MockSwap.sol";
 
 /// End-to-end journey against the fully-wired stack (mirrors Deploy.s.sol wiring).
 contract IntegrationTest is Test {
-    Racks racks; CaymanIslands vault; IRSAgent agents; TwapOracle twap; TaxSwapper swapper;
+    Racks racks; CaymanIslands vault; IRSAgent agents; TwapOracle twap;
     MockERC20 usdg; MockERC20 spy; MockVRF vrf; MockPair pair; MockRouter router; MockPrice price;
     address alice = address(0xA11CE);
+    address taxWallet = address(0x7A11);
     address carol = address(0xCA401);
     address reserve = address(0x5E5E5E);
     uint256 constant RAY = 1e27;
@@ -32,14 +32,13 @@ contract IntegrationTest is Test {
         agents.setPaused(false);   // MockVRF has code; casino starts paused by default
         pair.setTokens(address(racks), address(spy));
         twap = new TwapOracle(address(pair), address(racks));
-        swapper = new TaxSwapper(address(racks), address(spy), address(router), address(price), reserve, 1000 ether, 300);
 
         racks.setVault(address(vault));
         racks.setExempt(address(vault), true);
         vault.setAgent(address(agents));
-        racks.setTaxWallet(address(swapper));
-        racks.setExempt(address(swapper), true);
-        racks.setTaxExempt(address(swapper), true);
+        racks.setTaxWallet(taxWallet);
+        racks.setExempt(taxWallet, true);
+        racks.setTaxExempt(taxWallet, true);
         racks.setTaxOracle(address(twap));
         racks.setDex(address(pair), true);
         racks.setTaxExempt(address(vault), true);
@@ -60,14 +59,12 @@ contract IntegrationTest is Test {
         vault.lock(0, 500_000 ether);
         vm.stopPrank();
 
-        // alice sells into the pool -> tax accrues in the swapper
+        // alice sells into the pool -> tax accrues at the tax wallet
+        // (on mainnet the token converts it to SPY automatically on every sell; that path is
+        //  fork-tested in test/v4/AutoTaxSwap.t.sol against the real router)
         vm.prank(alice);
         racks.transfer(address(pair), 100_000 ether);
-        assertGt(racks.balanceOf(address(swapper)), 0);
-
-        // swapper auto-converts tax -> SPY -> reserve
-        swapper.swap();
-        assertGt(spy.balanceOf(reserve), 0);
+        assertGt(racks.balanceOf(taxWallet), 0);
 
         // pool bleeds into the pot
         vm.warp(block.timestamp + 1 days);
