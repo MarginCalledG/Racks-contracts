@@ -47,24 +47,6 @@ contract AuditS is Test {
         vm.expectRevert(bytes("!owner")); v.setReserve(address(1));   // deployer is out
     }
 
-    function testS1_Unused() internal {
-        // token side fully handed over / renounced
-        k.renounceMint(); k.renounceExemptControl(); k.transferOwnership(multisig);
-        uint256 pot = v.potBalance();
-        emit log_named_uint("pot before", pot);
-        assertGt(pot, 0);
-        // ... but the vault owner is still the deployer EOA
-        Drainer d = new Drainer();
-        v.setAgent(address(d));                       // tx 1
-        d.take(v, attackerWallet);                    // tx 2
-        emit log_named_uint("drained to attacker", k.balanceOf(attackerWallet));
-        emit log_named_uint("pot after", v.potBalance());
-        assertGt(k.balanceOf(attackerWallet), 0, "PoC: deployer drained the pot");
-        assertEq(v.potBalance(), 0);
-        // and the real agent contract is cut off permanently
-        vm.prank(address(ag)); vm.expectRevert(bytes("!agent"));
-        v.drawPot(address(1), 1);
-    }
 
     // S2 BLOCKED: setEpochLength re-anchors pairEpoch so the self-heal melt keeps firing
     function testS2_EpochLengthReanchorsPairEpoch() public {

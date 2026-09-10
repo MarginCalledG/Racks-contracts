@@ -121,7 +121,7 @@ contract Racks is ReentrancyGuard {
     uint256 public swapThreshold;        // min accrued RACKS before a conversion fires
     uint256 public maxSwapBps = 10;      // cap one conversion at 0.1% of the pair's RACKS reserve
     uint256 public constant SWAP_BOUNTY_BPS = 25;   // 0.25% of the converted RACKS to an external caller
-    uint256 public swapSlippageBps = 300;
+    uint256 public swapSlippageBps = 350;   // Z2: basis is the TWAP mid-price (no fee/impact), so ~300 effective
     bool public autoSwap;
     event TaxSwapped(uint256 racksIn, uint256 spyOut);
     event TaxSwapFailed(uint256 racksIn);

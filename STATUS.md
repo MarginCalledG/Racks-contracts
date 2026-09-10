@@ -120,6 +120,32 @@ Launch-Stunde OK, zweiter Kauf ueber dem Cap revertet, Kauf+Verkauf ueber einen 
 ohne Keeper OK.
 NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `renounceExemptControl()`.
 
+## VERTRAUENSANNAHMEN GEGENUEBER DER MULTISIG (gehoert woertlich in den Launch-Text)
+Auch nach renounceExemptControl und Ownership-Uebergabe verbleiben beim Owner:
+- `setTaxExempt` — steuerfreies Trading fuer Einzeladressen
+- `setDex(pair, false)` — Tax global aus
+- `setLockedSupply` — Rate innerhalb des Bands verschieben (Vault ueberschreibt bei naechster Operation)
+- `setSwapParams` — Konvertierungs-Deckel (max. 0.5% der Reserve) und Slippage
+- `setPaused(false)` auf IRSAgent — mit jeder Adresse, die Code hat (ein permissionless Mock waere
+  katastrophal; Multisig-Disziplin)
+- `proposeVrf` (7 Tage) bis `renounceVrfControl`
+- `enableAutoSwap` bis zum Renounce (Ziele danach fix)
+- Tax-Wallet ist melt-exempt und Owner-kontrolliert
+
+## PRE-LAUNCH-CHECKLISTE
+- [x] Alle Code-Findings der 17 Audit-Runden gefixt und verifiziert (Abschlussbericht 10.09.2026)
+- [ ] Push auf GitHub mit `git rm` fuer geloeschte Dateien; Clean-Clone-Build als Pflicht vor jedem Push
+- [ ] W-Term und Pot-Seed schriftlich entscheiden; Seed-Betrag ins Deploy-Skript
+- [ ] Multisig-Runbook: `acceptOwnership()` x4 innerhalb von Minuten nach dem Skript; USDG-Allowance
+      der Reserve fuer den Agent, `refundsReady()` vor jedem Unpause; `renounceExemptControl()` erst
+      nach Abwaegung (irreversibel)
+- [ ] Cron fuer `meltPool()` (alle 30 min) und `swapTax()` als Fallback — Self-Heal und Bounty tragen,
+      aber nachts handelt niemand
+- [ ] IRSAgent nicht unpausen, bevor die Zufallsquelle steht und selbst auditiert ist
+- [ ] Bot-Kompatibilitaet live auf Testnet gegen GoPlus / honeypot.is: Sell-Simulation muss zu jeder
+      Sekunde gruen sein
+- [ ] Externes Audit mit AUDIT.md als Startpunkt; Scope src/ + script/
+
 ## OFFEN
 1. Repo: v4-Schicht ist ENTFERNT (Clean-Clone-Build gruen). Auf GitHub per git rm nachziehen —
    'Add files via upload' loescht nichts.

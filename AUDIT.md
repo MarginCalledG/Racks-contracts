@@ -252,13 +252,13 @@ Kurz-Locker. Widerspricht der bisherigen Doku und ist bewusst zu entscheiden.
 - Pot-Formel klargestellt: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d, kein W-Term.
 
 ## Runde 10 — Owner-Modell der Nachbar-Contracts (S-Serie)
-**S1 — teilweise bestaetigt, realer Rest gefixt.** Der Befund bezog sich auf einen frueheren Stand: `setAgent`
-ist laengst einmalig (`require(agent == address(0))`), Agentenwechsel laufen ueber
-`proposeAgent`/`executeAgent` mit 48h-Timelock, und Cayman/IRSAgent/TwapOracle haben alle 2-Step-
-Ownership. Sein Schluss stimmte trotzdem: **das Deploy-Skript uebertrug nur Racks**, also gehoerten
-Vault, Agents und Orakel nach dem Deploy weiter dem Deployer-EOA. Gefixt: das Skript uebergibt jetzt
-alle vier an die Multisig und prueft alle vier pendingOwner/pendingAdmin im Self-Check. Die Lehre
-bleibt richtig — einen Contract als gehaertet abzuhaken und die Nachbarn nicht nachzuziehen.
+**S1 — BESTAETIGT (hoch) und gefixt.** Auf dem veroeffentlichten Stand war `setAgent` owner-only
+ohne jede Einschraenkung, und Vault, Agent und Orakel hatten keine Ownership-Uebergabe — das
+Deploy-Skript uebertrug nur Racks. Der Deployer-Key konnte den gesamten Pot mit einem Call
+umleiten, unabhaengig davon, wie gut der Token gehaertet war. Gefixt in derselben Runde: einmaliges
+`setAgent`, 2-Step-Ownership in allen drei Contracts, Deploy-Skript uebergibt alle vier und prueft
+alle vier im Self-Check. (Eine fruehere Fassung dieses Eintrags behauptete, der Befund beziehe
+sich auf einen aelteren Stand — das war falsch und ist hier korrigiert.)
 **S2 — bestaetigt und gefixt.** PoC: nach `setEpochLength(30min -> 2h)` war epochNow()=8 gegen
 pairEpoch=24, der Self-Heal-Melt haette nie wieder gefeuert. `setEpochLength` re-ankert pairEpoch
 jetzt auf die neue Zaehlung; Regressionstest prueft, dass der Pool danach wieder meltet.
@@ -366,10 +366,17 @@ bei jedem Sell einen Protokoll-Verkauf vor die Order des Nutzers und kostete ~14
 Konvertierung laeuft ausschliesslich ueber das permissionless `swapTax()` (Bots/Cron).
 **Z3** — `setSwapParams` erlaubt jetzt hoechstens 0.5% der Reserve (vorher 5%) als Multisig-Hebel.
 **setPair** ist einmalig ("pair is final").
-**Z2** — effektive Slippage: die 3% Toleranz gelten auf die Basis `max(quote, twap)`; relativ zum
-Live-Quote sind es bei gleichem TWAP ~2.6%, weil der Pool-Fee-Anteil bereits in der Quote steckt.
-Dokumentiert, nicht geaendert.
+**Z2** — effektive Slippage: die TWAP-Bewertung `amt*twap` ist ein Mid-Preis ohne 0.3% Pool-Fee
+und ohne Impact, die Live-Quote enthaelt beides; die `max`-Basis ist damit praktisch immer der TWAP.
+Bei 300 bps Toleranz lag die effektive Toleranz bei ~2.6%. Default auf 350 bps gesetzt, damit die
+Konvertierung nicht schon bei kleinen Bewegungen pausiert.
 Bot-Kompatibilitaet nach Z1: Worst-Case-Sell ohne Fallback-Konvertierung deutlich unter 400k Gas.
+
+## Runde 17 — Abschluss
+Externer Abschlussbericht (13 Runden, 07.–10.09.2026): **keine offenen Code-Findings.** Z1 verifiziert
+(200 Fehlversuche farmen 0; Fork: Tax-Pot unveraendert), In-Transfer-Fallback entfernt, Worst-Case-Sell
+362k Gas (vorher 536k). Verbleibend: Design-Entscheidungen (W-Term, Pot-Seed, Zufallsquelle) und die
+Multisig-Vertrauensliste — beides Text, kein Code.
 
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
