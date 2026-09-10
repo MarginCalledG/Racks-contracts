@@ -339,6 +339,24 @@ unrevealte Agent wird stillgelegt und die Mint-Gebuehr an den Zahler erstattet.
   BETRIEBSHINWEIS: `reserve` muss dem Agenten eine USDG-Allowance geben, sonst schlaegt die
   Erstattung fehl.
 
+## Runde 15 — Folgefunde in den frischen Fixes (Y-Serie)
+Beide neuen Punkte stammen aus meinen eigenen Aenderungen der Vorrunde.
+**Y1 — `reap()` konnte die Erstattung zerstoeren.** LIFE und STUCK_AFTER sind beide 3 Tage, `reap`
+ist permissionless und setzte `dead`, `reclaimStuckMint` verlangte `!dead`: wer zuerst reapte, machte
+aus einem erstattbaren Mint fuer Gaskosten einen verlorenen $99. Fix: `dead` sperrt die Erstattung
+nicht mehr; das Loeschen des Requests ist der Einmal-Schutz. Der Reap wird nachgeholt, falls noch offen.
+**Y2 — die TWAP-Basis nahm die falsche Seite.** `min(Live-Quote, TWAP)` akzeptiert genau den
+gedrueckten Spot, vor dem der Kommentar zu schuetzen behauptete. Jetzt `max(...)`. Bewusste Folge:
+bei einem echten scharfen Kursrutsch pausiert die Umwandlung, bis der TWAP nachzieht — Verkaeufe
+laufen weiter (try/catch). Deterministisch belegt in test/TwapFloor.t.sol: fairer Kurs wandelt,
+gedrueckter wird verweigert, besserer wandelt, nach TWAP-Angleich laeuft es wieder.
+**Y3 — `router_` und `spy_` waren weiter aenderbar.** Ein fremdes `swapSpy` mit luegendem balanceOf
+haette die `out >= minOut`-Pruefung ausgehebelt. Beide sind jetzt wie die Reserve nach der ersten
+Konfiguration fixiert.
+**Y4 — Erstattungen ziehen per transferFrom von der Reserve.** Neu: `refundsReady()` als View, damit
+die Multisig Allowance und Deckung pruefen kann, bevor jemand eine Erstattung braucht; steht im
+Deploy-Log und in STATUS.md.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

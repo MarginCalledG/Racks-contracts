@@ -43,7 +43,10 @@ Schutzmechanismen:
 - `maxSwapBps` (0.1% der Pair-Reserve pro Umwandlung) deckelt den Preis-Impact so weit, dass ein
   Bot-Default von 0.5% Slippage nicht reisst.
 - Die Tax-Rate wird VOR jeder Umwandlung bestimmt — kein Verkaeufer zahlt auf unsere eigene Dislokation.
-- `minOut` = Minimum aus Live-Quote und TWAP-Bewertung, gegen vorpositionierte Sandwiches.
+- `minOut` = MAXIMUM aus Live-Quote und TWAP-Bewertung. Die schuetzende Seite ist die hoehere:
+  ein gedrueckter Spot wird nicht bedient. Folge: bei einem echten scharfen Rutsch pausiert die
+  Umwandlung, bis der TWAP nachzieht; Verkaeufe laufen unbeeintraechtigt weiter.
+- `router`, `spy` und `reserve` sind nach der ersten Konfiguration unveraenderlich.
 - `swapSlippageBps` (3%) gegen getAmountsOut; scheitert der Swap, faengt try/catch ihn ab —
   **ein Nutzer-Verkauf darf daran nie scheitern** (Fork-Test deckt das ab).
 - Eigener Reentrancy-Guard: waehrend der Umwandlung darf ausschliesslich `swapRouter` zurueckrufen
@@ -123,8 +126,9 @@ NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `reno
 ## OFFEN
 1. Repo: v4-Schicht ist ENTFERNT (Clean-Clone-Build gruen). Auf GitHub per git rm nachziehen —
    'Add files via upload' loescht nichts.
-3a. `reserve` muss dem IRSAgent eine USDG-Allowance geben — sonst scheitert `reclaimStuckMint`
-   (Erstattung fuer Mints, die eine VRF-Umstellung oder ein Ausfall haengen laesst).
+3a. `reserve` muss dem IRSAgent eine USDG-Allowance geben und gedeckt sein — sonst scheitert
+   `reclaimStuckMint` (Erstattung fuer Mints, die eine VRF-Umstellung oder ein Ausfall haengen
+   laesst). Vor dem Entpausen mit `agents.refundsReady()` pruefen.
 3. VRF: Chainlink VRF laeuft NICHT auf RH (nur Data Feeds/Streams/CCIP). IRSAgent startet deshalb
    `paused = true`; `setPaused(false)` verlangt einen VRF mit Code. Empfehlung: EIN Zufalls-Seed pro
    Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die

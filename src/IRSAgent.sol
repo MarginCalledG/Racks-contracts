@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ReentrancyGuard} from "./ReentrancyGuard.sol";
 
-interface IERC20r { function transferFrom(address f, address t, uint256 a) external returns (bool); function decimals() external view returns (uint8); }
+interface IERC20r { function transferFrom(address f, address t, uint256 a) external returns (bool); function decimals() external view returns (uint8); function allowance(address,address) external view returns (uint256); function balanceOf(address) external view returns (uint256); }
 interface ICaymanPot {
     function potBalance() external view returns (uint256);
     function potLive() external view returns (uint256);
@@ -147,15 +147,23 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     // the mint fee refunded from the reserve's allowance.
     uint256 public constant STUCK_AFTER = 3 days;
     event MintRefunded(uint256 indexed id, address indexed payer);
+    /// Y4: refunds pull USDG from `reserve`, so the reserve must approve this contract.
+    /// The multisig can check this before anyone needs a refund.
+    function refundsReady() external view returns (bool) {
+        return usdg.allowance(reserve, address(this)) >= MINT_PRICE && usdg.balanceOf(reserve) >= MINT_PRICE;
+    }
 
     function reclaimStuckMint(uint256 reqId) external nonReentrant {
         Req memory q = reqs[reqId];
         require(q.kind == 1, "not a mint req");
         require(block.timestamp > q.placedAt + STUCK_AFTER, "too early");
         R storage r = agents[q.agentId];
-        require(!r.revealed && !r.dead, "already resolved");
+        // Y1: `dead` must NOT block the refund. LIFE and STUCK_AFTER are both 3 days, so a
+        // permissionless reap() lands in the same moment and would otherwise turn a refundable mint
+        // into a lost $99 for the price of gas. Deleting the request is the one-shot protection.
+        require(!r.revealed, "already resolved");
         delete reqs[reqId];
-        r.dead = true; livingCount--; ownedLiving[ownerOf(q.agentId)]--;
+        if (!r.dead) { r.dead = true; livingCount--; ownedLiving[ownerOf(q.agentId)]--; }
         require(usdg.transferFrom(reserve, q.payer, MINT_PRICE), "refund");
         emit MintRefunded(q.agentId, q.payer);
     }

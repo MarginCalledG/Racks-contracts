@@ -432,7 +432,11 @@ contract Racks is ReentrancyGuard {
         require(!exemptControlRenounced, "renounced");
         require(router_.code.length > 0 && spy_.code.length > 0, "no code");
         require(reserve_ != address(0) && threshold_ > 0, "bad cfg");
+        // Y3: router and SPY are fixed on first configuration too. A swapped-in `spy_` with a lying
+        // balanceOf would defeat the `out >= minOut` check entirely.
         require(swapReserve == address(0) || swapReserve == reserve_, "reserve is fixed");
+        require(swapRouter == address(0) || swapRouter == router_, "router is fixed");
+        require(swapSpy == address(0) || swapSpy == spy_, "spy is fixed");
         swapRouter = router_; swapSpy = spy_; swapReserve = reserve_; swapThreshold = threshold_;
         taxWallet = address(this);
         isExempt[address(this)] = true;      // accrued tax must not melt while it waits
@@ -482,13 +486,15 @@ contract Racks is ReentrancyGuard {
         require(msg.sender == address(this), "!self");
         address[] memory path = new address[](2);
         path[0] = address(this); path[1] = swapSpy;
-        // X3: a live quote can be pre-positioned against; the TWAP cannot be moved in one block.
-        // Use the lower of (live quote, TWAP valuation) as the basis, then apply tolerance.
+        // Y2: to be PROTECTIVE the floor must sit at the HIGHER of (live quote, TWAP valuation).
+        // Taking the lower one would simply accept a depressed spot — the opposite of the intent.
+        // Consequence, accepted deliberately: during a genuine sharp decline the conversion pauses
+        // until the TWAP catches up. Sells still go through (the swap is in try/catch).
         uint256[] memory q = IV2Router(swapRouter).getAmountsOut(amt, path);
         uint256 basis = q[1];
         if (taxOracle != address(0) && taxOracle.code.length > 0) {
             try ITwapRead(taxOracle).twap() returns (uint256 tw) {
-                if (tw > 0) { uint256 byTwap = amt * tw / 1e18; if (byTwap < basis) basis = byTwap; }
+                if (tw > 0) { uint256 byTwap = amt * tw / 1e18; if (byTwap > basis) basis = byTwap; }
             } catch {}
         }
         uint256 minOut = basis * (10000 - swapSlippageBps) / 10000;

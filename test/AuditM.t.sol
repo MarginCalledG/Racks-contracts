@@ -89,4 +89,28 @@ contract AuditM is Test {
         assertEq(oldAg.livingCount(), 0, "zombie retired");
         vm.expectRevert(bytes("not a mint req")); oldAg.reclaimStuckMint(reqId);
     }
+
+    // Y1: a permissionless reap must NOT destroy the refund (LIFE and STUCK_AFTER are both 3 days)
+    function testY1_ReapCannotBlockRefund() public {
+        vm.prank(alice); uint256 id = oldAg.mint();
+        uint256 reqId = vrf.lastId();
+        uint256 paid = 99 * 10 ** usdg.decimals();
+        vm.prank(address(0x8E5E)); usdg.approve(address(oldAg), type(uint256).max);
+        usdg.mint(address(0x8E5E), paid);
+
+        vm.warp(block.timestamp + 3 days + 1);
+        vm.prank(address(0x6B1E)); oldAg.reap(id);          // griefer reaps first
+        uint256 before = usdg.balanceOf(alice);
+        oldAg.reclaimStuckMint(reqId);                       // refund must still work
+        assertEq(usdg.balanceOf(alice) - before, paid, "reap must not cost the payer the mint fee");
+        assertEq(oldAg.livingCount(), 0);
+    }
+
+    // Y4: the multisig can check that refunds are actually possible before anyone needs one
+    function testY4_RefundsReadyView() public {
+        assertFalse(oldAg.refundsReady(), "no allowance yet");
+        vm.prank(address(0x8E5E)); usdg.approve(address(oldAg), type(uint256).max);
+        usdg.mint(address(0x8E5E), 1_000 ether);
+        assertTrue(oldAg.refundsReady(), "reserve approved and funded");
+    }
 }

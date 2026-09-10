@@ -141,6 +141,8 @@ contract DeployScript is Script {
         console.log("      Wire it INSIDE the agent: proposeVrf -> 7d -> executeVrf -> setPaused(false)");
         console.log("      The vault's agent pointer is FINAL and cannot be changed.");
         console.log("LATER: agents.renounceVrfControl() once the randomness source is settled");
+        console.log("RUNBOOK: reserve MUST approve the agent for USDG, else refunds revert.");
+        console.log("         verify with agents.refundsReady() before the casino is unpaused.");
         console.log("LATER: racks.renounceExemptControl() - IRREVERSIBLE, blocks all future exemptions");
     }
 }

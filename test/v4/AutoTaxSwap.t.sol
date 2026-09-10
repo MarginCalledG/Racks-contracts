@@ -144,4 +144,13 @@ contract AutoTaxSwap is Test {
         vm.expectRevert(bytes("reserve is fixed"));
         k.enableAutoSwap(ROUTER, SPY, address(0xBAD), 1_000 ether);
     }
+
+
+    // Y3: the router and the SPY address are fixed after the first configuration
+    function testY3_RouterAndSpyAreFixed() public onFork {
+        vm.expectRevert(bytes("router is fixed"));
+        k.enableAutoSwap(SPY, SPY, reserve, 1_000 ether);        // SPY has code, so we reach the check
+        vm.expectRevert(bytes("spy is fixed"));
+        k.enableAutoSwap(ROUTER, ROUTER, reserve, 1_000 ether);
+    }
 }
