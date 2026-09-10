@@ -56,7 +56,9 @@ contract AutoTaxSwap is Test {
         assertGt(heldAfterBuy, 0, "buy tax accrues");
         assertEq(IERC20m(SPY).balanceOf(reserve), 0, "a buy cannot convert (pair is locked)");
 
-        _sell(W[0], k.balanceOf(W[0]) / 2);                   // the sell converts it
+        _sell(W[0], k.balanceOf(W[0]) / 2);                   // a sell itself no longer converts
+        assertEq(IERC20m(SPY).balanceOf(reserve), 0, "no in-transfer conversion any more");
+        vm.prank(address(0xB07)); k.swapTax();                 // the permissionless path does
         uint256 spy = IERC20m(SPY).balanceOf(reserve);
         emit log_named_uint("SPY delivered to reserve", spy);
         emit log_named_uint("tax left on token", k.balanceOf(address(k)));
@@ -65,7 +67,7 @@ contract AutoTaxSwap is Test {
 
     function testConversionKeepsUpOverManySells() public onFork {
         for (uint i; i < 5; i++) _buy(W[i], 3 ether);
-        for (uint i; i < 5; i++) _sell(W[i], k.balanceOf(W[i]) / 2);
+        for (uint i; i < 5; i++) { _sell(W[i], k.balanceOf(W[i]) / 2); vm.prank(address(0xB07)); k.swapTax(); }
         uint256 spy = IERC20m(SPY).balanceOf(reserve);
         uint256 left = k.balanceOf(address(k));
         emit log_named_uint("SPY in reserve after 5 buys + 5 sells", spy);
@@ -79,9 +81,11 @@ contract AutoTaxSwap is Test {
     function testBrokenRouterDoesNotBreakSells() public onFork {
         k.setSwapParams(1_000 ether, 50, 0);                  // 0 bps slippage tolerance -> swap fails
         _buy(W[1], 3 ether);
+        vm.prank(address(0xB07)); k.swapTax();                 // fails quietly, pays nothing
+        assertEq(k.balanceOf(address(0xB07)), 0, "no bounty on failure");
         uint256 before = k.balanceOf(W[1]);
-        _sell(W[1], before / 2);                              // must still go through
-        assertLt(k.balanceOf(W[1]), before, "sell executed despite a failing conversion");
+        _sell(W[1], before / 2);                              // user's sell is unaffected
+        assertLt(k.balanceOf(W[1]), before, "sell executed");
     }
 
     // the conversion itself must not be taxed or melt-drained while it waits

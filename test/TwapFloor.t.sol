@@ -81,4 +81,19 @@ contract TwapFloorTest is Test {
         vm.prank(address(0xB07)); k.swapTax();
         assertGt(spy.balanceOf(reserve), 0, "conversion resumes at the honest level");
     }
+
+    // Z1: a failed conversion pays NO bounty — 200 calls at a depressed spot must farm nothing
+    function testZ1_NoBountyOnFailure() public {
+        router.setRate(0.8e18);                        // conversion will be refused (TWAP floor)
+        address farmer = address(0xFA12);
+        uint256 held = k.balanceOf(address(k));
+        for (uint i; i < 200; i++) { vm.prank(farmer); k.swapTax(); }
+        assertEq(k.balanceOf(farmer), 0, "failed attempts must pay nothing");
+        assertEq(k.balanceOf(address(k)), held, "tax untouched");
+        assertEq(spy.balanceOf(reserve), 0);
+        // and a SUCCESSFUL call still pays exactly once
+        router.setRate(1e18);
+        vm.prank(farmer); k.swapTax();
+        assertGt(k.balanceOf(farmer), 0, "success pays the bounty");
+    }
 }

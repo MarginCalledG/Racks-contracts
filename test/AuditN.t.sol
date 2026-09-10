@@ -81,4 +81,11 @@ contract AuditN is Test {
         assertTrue(ag.settled(e));
         assertTrue(ag.settled(e - 2000), "older epochs count as settled without storage writes");
     }
+
+    // setPair is one-shot: the pool pointer cannot be redirected after deploy
+    function testSetPairIsFinal() public {
+        k.setExempt(pool, true); k.setPair(pool);
+        address other = address(0xB0002); k.setExempt(other, true);
+        vm.expectRevert(bytes("pair is final")); k.setPair(other);
+    }
 }

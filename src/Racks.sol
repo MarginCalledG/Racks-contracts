@@ -112,10 +112,9 @@ contract Racks is ReentrancyGuard {
     mapping(address => bool) public capExempt;   // routers/infra that hold tokens transiently
 
     // ---- automatic tax conversion (RACKS -> SPY -> reserve) ----
-    // Tax accrues on the token itself and is swapped out on SELLS. A buy cannot do it: the pair is
-    // locked inside pair.swap(), so any swap-back there would revert. On a sell the router moves the
-    // seller's RACKS into the pair BEFORE locking, so we can convert in that window — which is what
-    // every tax token does. Buy-side tax is therefore converted on the next sell, not stranded.
+    // Tax accrues on the token itself and is converted by the permissionless swapTax() (with a
+    // bounty) in its OWN transaction. There is deliberately no in-transfer fallback any more: it
+    // put a protocol sell in front of every user's sell and cost ~140k gas per trade.
     address public swapRouter;
     address public swapSpy;
     address public swapReserve;
@@ -279,9 +278,6 @@ contract Racks is ReentrancyGuard {
         // X2: price the trade BEFORE any protocol-side conversion moves the pool, otherwise the
         // seller pays tax on the dislocation we just created ourselves.
         uint256 bps = _taxBps(from, to, amount);
-        // fallback conversion path: only if the permissionless swapTax() has not kept up. Bounded by
-        // maxSwapBps so the seller's own fill is barely affected.
-        if (autoSwap && !inSwap && isDex[to] && !isTaxExempt[from]) _swapTax(address(0));
         uint256 removed = _debit(from, amount);
         uint256 tax = removed * bps / 10000;
         if (tax > 0) { _credit(taxWallet, tax); emit Transfer(from, taxWallet, tax); }
@@ -353,6 +349,7 @@ contract Racks is ReentrancyGuard {
     /// register the v2 pair. It MUST already be melt-exempt (setExempt) so its balance is nominal.
     function setPair(address p) external onlyOwner {
         require(isExempt[p], "pair not melt-exempt");
+        require(pair == address(0), "pair is final");
         pair = p; isDex[p] = true; capExempt[p] = true;
         pairIndex = index(); pairLastMelt = uint64(block.timestamp); pairEpoch = uint32(epochNow());
     }
@@ -446,7 +443,7 @@ contract Racks is ReentrancyGuard {
     }
     function setAutoSwap(bool on) external onlyOwner { autoSwap = on; }
     function setSwapParams(uint256 threshold_, uint256 maxBps_, uint256 slipBps_) external onlyOwner {
-        require(maxBps_ <= 500 && slipBps_ <= 1000, "bounds");
+        require(maxBps_ <= 50 && slipBps_ <= 1000, "bounds");   // Z3: at most 0.5% of the reserve
         swapThreshold = threshold_; maxSwapBps = maxBps_; swapSlippageBps = slipBps_;
     }
 
@@ -458,11 +455,16 @@ contract Racks is ReentrancyGuard {
         uint256 cap = reserveRacks * maxSwapBps / 10000;      // bound the price impact
         if (cap == 0) return;
         if (amt > cap) amt = cap;
+        // Z1: the bounty is paid ONLY in the success branch. Paid up front, every failure mode
+        // (TWAP floor after a dump, router outage, SPY paused) became a bounty farm: call, fail,
+        // keep the bounty, repeat. Now a failed attempt pays nothing.
         uint256 bounty = bountyTo == address(0) ? 0 : amt * SWAP_BOUNTY_BPS / 10000;
-        if (bounty > 0) { amt -= bounty; _moveExempt(address(this), bountyTo, bounty); }
+        uint256 toSwap = amt - bounty;
         inSwap = true;
-        try this.executeTaxSwap(amt) returns (uint256 out) { emit TaxSwapped(amt, out); }
-        catch { emit TaxSwapFailed(amt); }
+        try this.executeTaxSwap(toSwap) returns (uint256 out) {
+            if (bounty > 0) _moveExempt(address(this), bountyTo, bounty);
+            emit TaxSwapped(toSwap, out);
+        } catch { emit TaxSwapFailed(toSwap); }
         inSwap = false;
     }
 

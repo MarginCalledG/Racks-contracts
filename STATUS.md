@@ -30,18 +30,15 @@ Aenderungen ggue. dem alten Modell:
 Reihenfolge bleibt garantiert: 14d < 3d < 1d < LP < unlocked (Test testLockingBeatsHolding).
 
 ## AUTOMATISCHE TAX-UMWANDLUNG (RACKS -> SPY -> Reserve)
-Die Tax faellt auf dem Token selbst an und wird bei JEDEM VERKAUF automatisch in SPY getauscht und
-an `reserve` geschickt. Kein Keeper, kein TaxSwapper-Contract, kein manueller Schritt.
-**Warum nicht auch beim Kauf:** waehrend `pair.swap()` laeuft, ist das Pair per Reentrancy-Lock
-gesperrt — ein Rueck-Swap darin revertet zwingend. Beim Verkauf schiebt der Router die RACKS erst ins
-Pair und lockt danach; genau dieses Fenster nutzen wir (Standardverfahren aller Tax-Token).
-Kauf-Tax bleibt also kurz auf dem Token liegen und wird beim naechsten Verkauf mitgewandelt.
-BEVORZUGTER PFAD: `swapTax()` ist permissionless und zahlt 0.25% Bounty — Bots wandeln damit in
-EIGENEN Transaktionen um, sodass nichts vor der Order eines Verkaeufers landet. Der In-Transfer-Pfad
-beim Sell ist nur der Fallback, falls niemand nachgekommen ist.
+Die Tax faellt auf dem Token selbst an und wird ueber `swapTax()` in SPY getauscht und an `reserve`
+geschickt. Permissionless mit Bounty; ein Cron als Fallback ist Teil des Runbooks.
+
+EINZIGER PFAD: `swapTax()` ist permissionless und zahlt 0.25% Bounty — NUR bei Erfolg. Bots (oder
+ein Cron als Fallback) wandeln damit in eigenen Transaktionen um; nichts landet je vor der Order
+eines Verkaeufers. Es gibt keine In-Transfer-Konvertierung mehr (kostete ~140k Gas pro Sell und
+stellte das Protokoll vor seine eigenen Verkaeufer).
 Schutzmechanismen:
-- `maxSwapBps` (0.1% der Pair-Reserve pro Umwandlung) deckelt den Preis-Impact so weit, dass ein
-  Bot-Default von 0.5% Slippage nicht reisst.
+- `maxSwapBps` (0.1% der Pair-Reserve pro Umwandlung, Obergrenze 0.5%) deckelt den Preis-Impact.
 - Die Tax-Rate wird VOR jeder Umwandlung bestimmt — kein Verkaeufer zahlt auf unsere eigene Dislokation.
 - `minOut` = MAXIMUM aus Live-Quote und TWAP-Bewertung. Die schuetzende Seite ist die hoehere:
   ein gedrueckter Spot wird nicht bedient. Folge: bei einem echten scharfen Rutsch pausiert die

@@ -252,8 +252,7 @@ Kurz-Locker. Widerspricht der bisherigen Doku und ist bewusst zu entscheiden.
 - Pot-Formel klargestellt: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d, kein W-Term.
 
 ## Runde 10 — Owner-Modell der Nachbar-Contracts (S-Serie)
-**S1 — teilweise bestaetigt, realer Rest gefixt.** Die im Befund beschriebene Fassung wich vom
-gepruesften Stand ab (Stand hier zum Zeitpunkt der Runde): `setAgent`
+**S1 — teilweise bestaetigt, realer Rest gefixt.** Der Befund bezog sich auf einen frueheren Stand: `setAgent`
 ist laengst einmalig (`require(agent == address(0))`), Agentenwechsel laufen ueber
 `proposeAgent`/`executeAgent` mit 48h-Timelock, und Cayman/IRSAgent/TwapOracle haben alle 2-Step-
 Ownership. Sein Schluss stimmte trotzdem: **das Deploy-Skript uebertrug nur Racks**, also gehoerten
@@ -356,6 +355,21 @@ Konfiguration fixiert.
 **Y4 — Erstattungen ziehen per transferFrom von der Reserve.** Neu: `refundsReady()` als View, damit
 die Multisig Allowance und Deckung pruefen kann, bevor jemand eine Erstattung braucht; steht im
 Deploy-Log und in STATUS.md.
+
+## Runde 16 — Z-Serie
+**Z1 (hoch, mein Fehler aus X1) — Bounty wurde VOR dem `try` gezahlt.** Jeder Fehlschlag (TWAP-Floor
+nach einem Dump, Router-Ausfall, SPY pausiert) wurde zur Bounty-Farm: rufen, scheitern, Bounty
+behalten, wiederholen. Fix: Bounty nur im Erfolgszweig. Test: 200 Aufrufe am gedrueckten Spot
+farmen exakt 0, ein erfolgreicher Aufruf zahlt genau einmal.
+Dazu, wie empfohlen: die In-Transfer-Fallback-Konvertierung in `_move` ist ENTFERNT. Sie stellte
+bei jedem Sell einen Protokoll-Verkauf vor die Order des Nutzers und kostete ~140k Gas pro Trade.
+Konvertierung laeuft ausschliesslich ueber das permissionless `swapTax()` (Bots/Cron).
+**Z3** — `setSwapParams` erlaubt jetzt hoechstens 0.5% der Reserve (vorher 5%) als Multisig-Hebel.
+**setPair** ist einmalig ("pair is final").
+**Z2** — effektive Slippage: die 3% Toleranz gelten auf die Basis `max(quote, twap)`; relativ zum
+Live-Quote sind es bei gleichem TWAP ~2.6%, weil der Pool-Fee-Anteil bereits in der Quote steckt.
+Dokumentiert, nicht geaendert.
+Bot-Kompatibilitaet nach Z1: Worst-Case-Sell ohne Fallback-Konvertierung deutlich unter 400k Gas.
 
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
