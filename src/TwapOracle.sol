@@ -38,6 +38,10 @@ contract TwapOracle {
         lastSpot = _spot();
     }
 
+    address public pendingOwner;
+    function transferOwnership(address n) external { require(msg.sender == owner, "!owner"); pendingOwner = n; }
+    function acceptOwnership() external { require(msg.sender == pendingOwner, "!pending"); owner = pendingOwner; pendingOwner = address(0); }
+
     function setPair(address p, address _racks) external { require(msg.sender == owner, "!owner"); pair = IPair(p); racksIs0 = (IPair(p).token0() == _racks); }
 
     function _reserves() internal view returns (uint256 kr, uint256 sr) {

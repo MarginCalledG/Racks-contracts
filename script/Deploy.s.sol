@@ -91,7 +91,14 @@ contract DeployScript is Script {
         require(lp > 0, "no LP minted");
         require(IERC20d(pair).transfer(c.lpDestination, lp), "lp move failed");
         racks.setTaxExempt(c.me, false);              // deployer is now an ordinary trader
-        racks.transferOwnership(c.multisig);          // 2-step: multisig must acceptOwnership()
+
+        // S1: hand over EVERY contract, not just the token. The vault holds the lockers' funds and
+        // the pot; leaving it on the deployer EOA would keep a single key able to swap the agent
+        // (after the timelock) and drain the pot. All four use 2-step ownership.
+        racks.transferOwnership(c.multisig);
+        vault.transferOwnership(c.multisig);
+        agents.transferOwnership(c.multisig);
+        oracle.transferOwnership(c.multisig);
 
         vm.stopBroadcast();
 
@@ -107,7 +114,10 @@ contract DeployScript is Script {
         require(racks.maxWallet() > 0, "launch cap not set");
         require(IERC20d(pair).balanceOf(c.me) == 0, "deployer still holds LP");
         require(!racks.isTaxExempt(c.me), "deployer still tax-exempt");
-        require(racks.pendingOwner() == c.multisig, "ownership handover not started");
+        require(racks.pendingOwner() == c.multisig, "racks handover not started");
+        require(vault.pendingOwner() == c.multisig, "vault handover not started");
+        require(agents.pendingAdmin() == c.multisig, "agents handover not started");
+        require(oracle.pendingOwner() == c.multisig, "oracle handover not started");
         require(agents.paused(), "agents must stay paused until VRF is real");
 
         deployedRacks = address(racks);
@@ -118,7 +128,8 @@ contract DeployScript is Script {
         console.log("Oracle  ", address(oracle));
         console.log("maxWallet (1%)", racks.maxWallet());
         console.log("LP sent to  ", c.lpDestination);
-        console.log("NEXT: multisig calls racks.acceptOwnership()");
+        console.log("NEXT: multisig calls acceptOwnership() on ALL FOUR:");
+        console.log("       racks, vault, agents, oracle - until then the deployer still controls them");
         console.log("NEXT: agents stay PAUSED until a real VRF exists (agents.setPaused(false))");
         console.log("LATER: racks.renounceExemptControl() - IRREVERSIBLE, blocks all future exemptions");
     }

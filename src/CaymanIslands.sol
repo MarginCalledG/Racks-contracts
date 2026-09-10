@@ -105,7 +105,28 @@ contract CaymanIslands is ReentrancyGuard {
         FEE = [3 * u, 5 * u, 10 * u];
     }
 
-    function setAgent(address r) external onlyOwner { agent = r; }
+    // The agent may draw the whole pot, so swapping it is timelocked: lockers get AGENT_DELAY to
+    // exit before an unknown contract can touch their bleed. The first agent (deploy time, empty pot)
+    // may be set immediately.
+    uint256 public constant AGENT_DELAY = 48 hours;
+    address public pendingAgent;
+    uint256 public pendingAgentAt;
+    event AgentProposed(address agent, uint256 executableAt);
+
+    function setAgent(address r) external onlyOwner {
+        require(agent == address(0), "use proposeAgent");   // only while none is set (deploy)
+        agent = r;
+    }
+    function proposeAgent(address r) external onlyOwner { pendingAgent = r; pendingAgentAt = block.timestamp + AGENT_DELAY; emit AgentProposed(r, pendingAgentAt); }
+    function executeAgent() external onlyOwner {
+        require(pendingAgent != address(0) && block.timestamp >= pendingAgentAt, "timelock");
+        agent = pendingAgent; pendingAgent = address(0); pendingAgentAt = 0;
+    }
+    function cancelAgent() external onlyOwner { pendingAgent = address(0); pendingAgentAt = 0; }
+
+    address public pendingOwner;
+    function transferOwnership(address n) external onlyOwner { pendingOwner = n; }
+    function acceptOwnership() external { require(msg.sender == pendingOwner, "!pending"); owner = pendingOwner; pendingOwner = address(0); }
     function setReserve(address r) external onlyOwner { reserve = r; }
     function position(address u, uint8 b) external view returns (uint256 principal, uint64 lockedAt, uint64 unlockAt) {
         Pos storage p = _pos[u][b]; return (p.principal, p.lockedAt, p.unlockAt);

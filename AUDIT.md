@@ -251,6 +251,23 @@ Kurz-Locker. Widerspricht der bisherigen Doku und ist bewusst zu entscheiden.
   noch WRacks als Fallback); STATUS-Verweis auf den geloeschten RacksDirectInPool-Test korrigiert.
 - Pot-Formel klargestellt: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d, kein W-Term.
 
+## Runde 10 — Owner-Modell der Nachbar-Contracts (S-Serie)
+**S1 — teilweise bestaetigt, realer Rest gefixt.** Der Auditor pruefte ein aelteres Zip: `setAgent`
+ist laengst einmalig (`require(agent == address(0))`), Agentenwechsel laufen ueber
+`proposeAgent`/`executeAgent` mit 48h-Timelock, und Cayman/IRSAgent/TwapOracle haben alle 2-Step-
+Ownership. Sein Schluss stimmte trotzdem: **das Deploy-Skript uebertrug nur Racks**, also gehoerten
+Vault, Agents und Orakel nach dem Deploy weiter dem Deployer-EOA. Gefixt: das Skript uebergibt jetzt
+alle vier an die Multisig und prueft alle vier pendingOwner/pendingAdmin im Self-Check. Die Lehre
+bleibt richtig — einen Contract als gehaertet abzuhaken und die Nachbarn nicht nachzuziehen.
+**S2 — bestaetigt und gefixt.** PoC: nach `setEpochLength(30min -> 2h)` war epochNow()=8 gegen
+pairEpoch=24, der Self-Heal-Melt haette nie wieder gefeuert. `setEpochLength` re-ankert pairEpoch
+jetzt auf die neue Zaehlung; Regressionstest prueft, dass der Pool danach wieder meltet.
+**S3 — bestaetigt und entfernt.** `wrapper`, `setWrapper` und `recordLaunchReceipt` waren toter Code
+aus der Wrapper-Aera, mit dem ein gesetzter `wrapper` fremden Wallets das Launch-Cap-Ledger haette
+vollschreiben koennen. Ersatzlos geloescht.
+Operativ uebernommen: USDG (Paxos) hat eine Freeze-Liste — `reserve` darf keine einfrierbare Adresse
+sein, sonst reverten lock/mint/feed; `setReserve` ist der Ausweg. Steht in STATUS.md.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

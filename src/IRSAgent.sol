@@ -247,5 +247,9 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     /// what the next epoch will realistically pay from (for UIs)
     function potPreview() external view returns (uint256) { return vault.potLive(); }
 
+    address public pendingAdmin;
+    function transferOwnership(address n) external onlyAdmin { pendingAdmin = n; }
+    function acceptOwnership() external { require(msg.sender == pendingAdmin, "!pending"); admin = pendingAdmin; pendingAdmin = address(0); }
+
     function setReserve(address r) external onlyAdmin { reserve = r; }
 }

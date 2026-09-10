@@ -90,9 +90,8 @@ contract Racks is ReentrancyGuard {
     uint256 public maxWallet;
     bool public mintRenounced;
 
-    // F3: cumulative launch-window receipts per wallet (never decreases) -> the cap is a running total,
-    // not a balance snapshot, so unwrap/transfer-away loops cannot reset it. One ledger for RACKS and
-    // wRACKS receipts (the wrapper reports its deliveries here).
+    // F3: cumulative launch-window acquisitions per wallet (never decreases) -> the cap is a running
+    // total, not a balance snapshot, so selling or moving tokens away cannot reset it.
     mapping(address => uint256) public launchReceived;
     mapping(address => bool) public capExempt;   // routers/infra that hold tokens transiently
 
@@ -105,7 +104,6 @@ contract Racks is ReentrancyGuard {
     uint64  public pairLastMelt;                    // timestamp of the last pool melt (LP factor)
     uint32  public pairEpoch;                       // epoch of the last pool melt
     uint256 public constant MELT_BOUNTY_BPS = 25;   // 0.25% of the pool melt to whoever calls it
-    address public wrapper;
     bool public exemptControlRenounced;
 
     address public owner;
@@ -314,7 +312,6 @@ contract Racks is ReentrancyGuard {
     function acceptOwnership() external { require(msg.sender == pendingOwner, "!pending"); owner = pendingOwner; pendingOwner = address(0); }
 
     function setVault(address l) external onlyOwner { vault = l; }
-    function setWrapper(address w) external onlyOwner { wrapper = w; }
 
     /// register the v2 pair. It MUST already be melt-exempt (setExempt) so its balance is nominal.
     function setPair(address p) external onlyOwner {
@@ -367,8 +364,6 @@ contract Racks is ReentrancyGuard {
         launchReceived[who] += v;
         require(launchReceived[who] <= maxWallet, "max wallet");
     }
-    /// the wrapper reports wRACKS deliveries (in RACKS value) so pool buys count against the same cap
-    function recordLaunchReceipt(address to, uint256 v) external { require(msg.sender == wrapper, "!wrapper"); _recordLaunch(to, v); }
     function enableTrading() external onlyOwner {
         require(tradingStart == 0, "started");
         tradingStart = block.timestamp;
@@ -381,9 +376,12 @@ contract Racks is ReentrancyGuard {
     }
     function setEpochLength(uint256 s) external onlyOwner {
         require(s >= MIN_EPOCH, "epoch too short");
-        if (epochNow() > checkpointEpoch) { indexCheckpoint = index(); } // settle under old length
+        if (epochNow() > checkpointEpoch) { indexCheckpoint = index(); }  // settle under the old length
         epochLength = s;
         checkpointEpoch = (block.timestamp - startTime) / s;
+        // S2: epoch numbering changes with the length. Without re-anchoring, epochNow() can land
+        // BEHIND pairEpoch and the self-healing pool melt in _preOp would never fire again.
+        pairEpoch = uint32(checkpointEpoch);
     }
     function setDex(address a, bool v) external onlyOwner { isDex[a] = v; }
     function setTaxExempt(address a, bool v) external onlyOwner { isTaxExempt[a] = v; }

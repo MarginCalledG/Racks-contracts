@@ -76,7 +76,13 @@ eigene TX in einem eigenen Block — deshalb muss JEDES Zwischenfenster gate-ges
    (sonst existiert ein Block, in dem der Pool handelbar, aber ungegatet und steuerfrei ist)
 3. Liquiditaet seeden (Gate zu; nur der tax-exempte Deployer kommt durch)
 4. `enableTrading()` -> Launch-Stunde startet
-5. LP an LP_DESTINATION (0x...dEaD = burn), `setTaxExempt(deployer,false)`, `transferOwnership(multisig)`
+5. LP an LP_DESTINATION (0x...dEaD = burn), `setTaxExempt(deployer,false)`, dann Ownership-Uebergabe
+   ALLER VIER Contracts an die Multisig: racks, vault, agents, oracle (2-Step, per require geprueft).
+   **Die Multisig muss auf allen vieren `acceptOwnership()` rufen** — bis dahin kontrolliert sie der
+   Deployer. Der Vault haelt die Einlagen der Locker und den Pot; ihn beim Deployer zu lassen waere
+   ein Single-Key-Risiko, unabhaengig davon wie gut der Token gehaertet ist.
+   Agentenwechsel im Vault sind einmalig (`setAgent`) bzw. 48h-timelocked (`proposeAgent`/`executeAgent`),
+   damit Locker einen Wechsel kommen sehen.
 Env: PRIVATE_KEY, VRF_COORDINATOR, RESERVE, TAX_WALLET, MULTISIG, LP_DESTINATION
 Selbstchecks am Ende: Pair melt-exempt, setPair gesetzt, isDex, capExempt, Tax-Wallet melt-exempt,
 Orakel verdrahtet, Mint renounced, Trading an, maxWallet > 0.
@@ -97,7 +103,9 @@ NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `reno
    Unlocked-Melt und Pool-Melt werden GEBRANNT und tragen nichts bei (kein W-Term). Ohne Locker ist
    der Pot null. Optionen: (a) Supply-Reserve zurueckhalten und `fundPot` am Launch, (b) den W-Term
    nachruesten (ein Teil des Unlocked-Melts in den Pot statt in den Burn) — Owner-Entscheidung.
-7. renounceExemptControl ist IRREVERSIBEL — danach sind auch noetige Exemptions (neue Vault-Version,
+7. USDG (Paxos) hat eine Freeze-Liste: `reserve` darf keine einfrierbare Adresse sein, sonst reverten
+   lock, mint und feed. `setReserve` ist der Ausweg — Adresse bewusst waehlen.
+8. renounceExemptControl ist IRREVERSIBEL — danach sind auch noetige Exemptions (neue Vault-Version,
    neue Tax-Wallet) unmoeglich. Bewusst erst nach dem Launch und nach Abwaegung aufrufen.
 4. Externes Audit vor Mainnet.
 5. Frontend-Konstanten an die Contracts angleichen (siehe AUDIT.md).
