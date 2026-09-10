@@ -70,4 +70,23 @@ contract AuditM is Test {
         vm.expectRevert(bytes("!owner")); v.setAgent(address(0x1));
         vm.stopPrank();
     }
+
+    // X6: a mint stranded by a VRF change (or outage) can be reclaimed with the fee refunded
+    function testX6_StuckMintReclaimable() public {
+        vm.prank(alice); uint256 id = oldAg.mint();     // VRF never answers
+        uint256 reqId = vrf.lastId();
+        assertEq(oldAg.livingCount(), 1);
+        uint256 paid = 99 * 10 ** usdg.decimals();
+        // the reserve must have approved the agent to pay refunds out
+        vm.prank(address(0x8E5E)); usdg.approve(address(oldAg), type(uint256).max);
+        usdg.mint(address(0x8E5E), paid);
+
+        vm.expectRevert(bytes("too early")); oldAg.reclaimStuckMint(reqId);
+        vm.warp(block.timestamp + 3 days + 1);
+        uint256 before = usdg.balanceOf(alice);
+        oldAg.reclaimStuckMint(reqId);
+        assertEq(usdg.balanceOf(alice) - before, paid, "mint fee refunded");
+        assertEq(oldAg.livingCount(), 0, "zombie retired");
+        vm.expectRevert(bytes("not a mint req")); oldAg.reclaimStuckMint(reqId);
+    }
 }

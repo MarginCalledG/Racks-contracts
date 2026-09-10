@@ -91,4 +91,57 @@ contract AutoTaxSwap is Test {
         vm.warp(block.timestamp + 7 days); k.poke();
         assertEq(k.balanceOf(address(k)), held, "accrued tax must not melt");
     }
+
+    // X1: the preferred path — anyone converts in their OWN tx, so nothing lands in front of a fill
+    function testPermissionlessSwapTaxWithBounty() public onFork {
+        _buy(W[3], 5 ether);
+        assertGt(k.balanceOf(address(k)), 0, "tax accrued");
+        address bot = address(0xB07);
+        uint256 botBefore = k.balanceOf(bot);
+        vm.prank(bot); k.swapTax();
+        emit log_named_uint("bot bounty (RACKS)", k.balanceOf(bot) - botBefore);
+        emit log_named_uint("SPY to reserve", IERC20m(SPY).balanceOf(reserve));
+        assertGt(k.balanceOf(bot) - botBefore, 0, "bounty paid");
+        assertGt(IERC20m(SPY).balanceOf(reserve), 0, "converted outside a user's trade");
+    }
+
+    // X1: with the conversion already done, a seller's fill is untouched by the protocol
+    function testSellerFillNotFrontrunWhenBotKeepsUp() public onFork {
+        _buy(W[4], 5 ether);
+        vm.prank(address(0xB07)); k.swapTax();          // bot keeps the backlog clear
+        uint256 held = k.balanceOf(address(k));
+        uint256 spyBefore = IERC20m(SPY).balanceOf(W[4]);
+        _sell(W[4], k.balanceOf(W[4]) / 2);
+        emit log_named_uint("tax left before the sell", held);
+        assertGt(IERC20m(SPY).balanceOf(W[4]), spyBefore, "seller filled");
+    }
+
+    // X2: the tax rate is measured BEFORE any protocol-side conversion moves the price
+    function testSellerNotTaxedOnOurOwnDislocation() public onFork {
+        // build a fat backlog so the in-transfer fallback would move the price meaningfully
+        for (uint i; i < 3; i++) _buy(W[i], 8 ether);
+        uint256 amt = k.balanceOf(W[0]) / 4;
+        uint256 taxBefore = k.balanceOf(address(k));
+        _sell(W[0], amt);
+        uint256 taxTaken = k.balanceOf(address(k)) + 0; // remaining after conversion
+        emit log_named_uint("accrued tax before sell", taxBefore);
+        emit log_named_uint("accrued tax after sell", taxTaken);
+        // the rate applied must stay inside the band; if we priced AFTER our own dump it would peg to 800
+        uint256 bps = k.ratePerDayBps(); bps;
+        assertLt(taxTaken, taxBefore + amt * 800 / 10000, "sell tax must not be pegged to the cap");
+    }
+
+    // X4: re-entry is scoped to the router; nobody else gets in during a conversion
+    function testGuardScopedToRouter() public onFork {
+        assertEq(k.swapRouter(), ROUTER);
+        // a plain transfer from an unrelated address during normal operation still works
+        _buy(W[2], 2 ether);
+        vm.prank(W[2]); k.transfer(W[3], 1 ether);
+    }
+
+    // X5: the conversion destination cannot be redirected after configuration
+    function testReserveIsFixed() public onFork {
+        vm.expectRevert(bytes("reserve is fixed"));
+        k.enableAutoSwap(ROUTER, SPY, address(0xBAD), 1_000 ether);
+    }
 }

@@ -252,7 +252,8 @@ Kurz-Locker. Widerspricht der bisherigen Doku und ist bewusst zu entscheiden.
 - Pot-Formel klargestellt: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d, kein W-Term.
 
 ## Runde 10 — Owner-Modell der Nachbar-Contracts (S-Serie)
-**S1 — teilweise bestaetigt, realer Rest gefixt.** Der Auditor pruefte ein aelteres Zip: `setAgent`
+**S1 — teilweise bestaetigt, realer Rest gefixt.** Die im Befund beschriebene Fassung wich vom
+gepruesften Stand ab (Stand hier zum Zeitpunkt der Runde): `setAgent`
 ist laengst einmalig (`require(agent == address(0))`), Agentenwechsel laufen ueber
 `proposeAgent`/`executeAgent` mit 48h-Timelock, und Cayman/IRSAgent/TwapOracle haben alle 2-Step-
 Ownership. Sein Schluss stimmte trotzdem: **das Deploy-Skript uebertrug nur Racks**, also gehoerten
@@ -315,6 +316,28 @@ Sicherheitsrelevante Punkte dieser Aenderung (Audit-Schwerpunkt):
 - Die wartende Tax ist melt- und tax-exempt (schrumpft nicht, besteuert sich nicht selbst).
 `TaxSwapper.sol` und sein Test sind ersatzlos entfernt (Contract, Tests, Deploy-Wiring, Doku).
 Clean-Clone-Build gruen: 100 normale + 18 Fork-Tests.
+
+## Runde 14 — Auto-Swap-Nebenwirkungen (X-Serie)
+Alle sechs Befunde uebernommen, in der vorgeschlagenen Reihenfolge.
+**X2 (die schwerwiegendste) — der Verkaeufer wurde auf die Dislokation besteuert, die das Protokoll
+gerade selbst erzeugt hatte.** `_swapTax` stand vor `_taxBps`, das Orakel sampelte den Post-Dump-Spot.
+Fix: `bps` wird jetzt VOR jeder protokollseitigen Umwandlung berechnet.
+**X1 — das Protokoll verkaufte vor seinen eigenen Verkaeufern.** Zwei Massnahmen: `maxSwapBps` von
+50 auf 10 (0.1% der Reserve, unter jedem Bot-Default), und ein permissionless `swapTax()` mit
+0.25%-Bounty analog `meltPool` — die Umwandlung passiert damit in EIGENEN Transaktionen, der
+In-Transfer-Pfad ist nur noch Fallback, wenn niemand nachgekommen ist.
+**X3 — minOut lag am Live-Quote**, gegen den sich ein Sandwich vorpositionieren kann. Jetzt gilt das
+Minimum aus Live-Quote und TWAP-Bewertung als Basis; der TWAP ist in einem Block nicht bewegbar.
+**X4 — `guarded` hob den Reentrancy-Schutz global auf, solange `inSwap` stand.** Jetzt ist die
+Ausnahme auf `msg.sender == swapRouter` verengt; `burn` nutzt denselben Guard statt des alten.
+**X5 — `enableAutoSwap` setzte `isExempt[this]` an `setExempt` vorbei** und konnte `reserve_`
+jederzeit umbiegen. Jetzt an `exemptControlRenounced` gebunden, und das Ziel ist nach der ersten
+Konfiguration fixiert ("reserve is fixed").
+**X6 — nach `executeVrf` konnte die alte Quelle offene Requests nicht mehr erfuellen**; laufende
+Mints verfielen mit den $99. Neu: `reclaimStuckMint(reqId)` nach STUCK_AFTER (3 Tage) — der
+unrevealte Agent wird stillgelegt und die Mint-Gebuehr an den Zahler erstattet.
+  BETRIEBSHINWEIS: `reserve` muss dem Agenten eine USDG-Allowance geben, sonst schlaegt die
+  Erstattung fehl.
 
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).

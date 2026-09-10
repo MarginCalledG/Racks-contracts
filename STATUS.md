@@ -36,13 +36,18 @@ an `reserve` geschickt. Kein Keeper, kein TaxSwapper-Contract, kein manueller Sc
 gesperrt — ein Rueck-Swap darin revertet zwingend. Beim Verkauf schiebt der Router die RACKS erst ins
 Pair und lockt danach; genau dieses Fenster nutzen wir (Standardverfahren aller Tax-Token).
 Kauf-Tax bleibt also kurz auf dem Token liegen und wird beim naechsten Verkauf mitgewandelt.
+BEVORZUGTER PFAD: `swapTax()` ist permissionless und zahlt 0.25% Bounty — Bots wandeln damit in
+EIGENEN Transaktionen um, sodass nichts vor der Order eines Verkaeufers landet. Der In-Transfer-Pfad
+beim Sell ist nur der Fallback, falls niemand nachgekommen ist.
 Schutzmechanismen:
-- `maxSwapBps` (0.5% der Pair-Reserve pro Umwandlung) deckelt den Preis-Impact; ein Rueckstand kann
-  entstehen, bleibt aber durch den Deckel begrenzt.
+- `maxSwapBps` (0.1% der Pair-Reserve pro Umwandlung) deckelt den Preis-Impact so weit, dass ein
+  Bot-Default von 0.5% Slippage nicht reisst.
+- Die Tax-Rate wird VOR jeder Umwandlung bestimmt — kein Verkaeufer zahlt auf unsere eigene Dislokation.
+- `minOut` = Minimum aus Live-Quote und TWAP-Bewertung, gegen vorpositionierte Sandwiches.
 - `swapSlippageBps` (3%) gegen getAmountsOut; scheitert der Swap, faengt try/catch ihn ab —
   **ein Nutzer-Verkauf darf daran nie scheitern** (Fork-Test deckt das ab).
-- Eigener Reentrancy-Guard: der Router MUSS waehrend der Umwandlung transferFrom auf uns aufrufen,
-  deshalb ist genau dieser Pfad erlaubt (`inSwap`), jeder andere weiterhin blockiert.
+- Eigener Reentrancy-Guard: waehrend der Umwandlung darf ausschliesslich `swapRouter` zurueckrufen
+  (`inSwap && msg.sender == swapRouter`), jeder andere Pfad bleibt blockiert.
 - Die wartende Tax ist melt-exempt und tax-exempt (sie schrumpft nicht und besteuert sich nicht selbst).
 Konfiguration: `enableAutoSwap(router, spy, reserve, threshold)`, `setSwapParams(threshold, maxBps, slipBps)`,
 `setAutoSwap(bool)`. Der frühere TaxSwapper-Contract ist ersatzlos entfernt.
@@ -118,6 +123,8 @@ NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `reno
 ## OFFEN
 1. Repo: v4-Schicht ist ENTFERNT (Clean-Clone-Build gruen). Auf GitHub per git rm nachziehen —
    'Add files via upload' loescht nichts.
+3a. `reserve` muss dem IRSAgent eine USDG-Allowance geben — sonst scheitert `reclaimStuckMint`
+   (Erstattung fuer Mints, die eine VRF-Umstellung oder ein Ausfall haengen laesst).
 3. VRF: Chainlink VRF laeuft NICHT auf RH (nur Data Feeds/Streams/CCIP). IRSAgent startet deshalb
    `paused = true`; `setPaused(false)` verlangt einen VRF mit Code. Empfehlung: EIN Zufalls-Seed pro
    Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die

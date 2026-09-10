@@ -41,7 +41,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     mapping(uint256 => R) public agents;
     mapping(address => uint256) public ownedLiving;
 
-    struct Req { uint8 kind; uint256 agentId; uint32 epoch; }
+    struct Req { uint8 kind; uint256 agentId; uint32 epoch; uint40 placedAt; address payer; }
     mapping(uint256 => Req) internal reqs;
 
     mapping(uint32 => uint256) public totalShares;
@@ -107,7 +107,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         livingCount++;
         _mint(msg.sender, id); // _update bumps ownedLiving
         uint256 rid = vrf.requestRandom(address(this));
-        reqs[rid] = Req(1, id, 0);
+        reqs[rid] = Req(1, id, 0, uint40(block.timestamp), msg.sender);
         emit Minted(id, msg.sender);
     }
 
@@ -138,7 +138,26 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         if (pendingAttacks[e] == 0 && (activeEpochs.length == 0 || activeEpochs[activeEpochs.length - 1] != e)) activeEpochs.push(e);
         pendingAttacks[e]++;
         uint256 rid = vrf.requestRandom(address(this));
-        reqs[rid] = Req(2, id, e);
+        reqs[rid] = Req(2, id, e, uint40(block.timestamp), msg.sender);
+    }
+
+    // ---- X6: rescue for requests the randomness source can no longer answer ----
+    // After a VRF change (or an outage) an in-flight mint would otherwise be stuck forever with the
+    // fee already paid. After STUCK_AFTER the payer can reclaim: the unrevealed agent is retired and
+    // the mint fee refunded from the reserve's allowance.
+    uint256 public constant STUCK_AFTER = 3 days;
+    event MintRefunded(uint256 indexed id, address indexed payer);
+
+    function reclaimStuckMint(uint256 reqId) external nonReentrant {
+        Req memory q = reqs[reqId];
+        require(q.kind == 1, "not a mint req");
+        require(block.timestamp > q.placedAt + STUCK_AFTER, "too early");
+        R storage r = agents[q.agentId];
+        require(!r.revealed && !r.dead, "already resolved");
+        delete reqs[reqId];
+        r.dead = true; livingCount--; ownedLiving[ownerOf(q.agentId)]--;
+        require(usdg.transferFrom(reserve, q.payer, MINT_PRICE), "refund");
+        emit MintRefunded(q.agentId, q.payer);
     }
 
     function rawFulfill(uint256 reqId, uint256 word) external {
