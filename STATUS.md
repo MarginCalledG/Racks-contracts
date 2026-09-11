@@ -124,13 +124,17 @@ NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `reno
 Ein Seed pro Epoche aus ZWEI Komponenten, zwei Parteien, keine steuert allein:
 - Der vorab committete Kettenwert des Keepers, enthuellt am EPOCHENANFANG. Ab dann oeffentlich —
   fuer niemanden ein Vorteil, denn er entscheidet allein nichts.
-- Ein Blockhash NACH Epochenschluss, festgehalten von der ersten Transaktion, die die Epoche danach
-  beruehrt (captureClose; jeder Angriff/Tally ruft es). Kein Spieler steuert ihn.
+- Ein Blockhash NACH Epochenschluss, in ZWEI Schritten erfasst (C1): die erste Transaktion nach dem
+  Ende fixiert eine ZUKUENFTIGE Blocknummer (Hash existiert noch nicht — wer wann anfasst, gewinnt
+  nichts); eine spaetere Transaktion innerhalb von 256 Bloecken friert diesen Hash ein (kann ihn nur
+  festhalten, nicht waehlen). Verfaellt das Fenster, wird erneut eine Zukunftsnummer gesetzt.
+  Der Keeper-Bot tickt alle 15 s, damit das Einfrieren sicher innerhalb der ~64 s passiert.
 seed(e) = keccak(preimage_e, closeHash_e). Der Keeper kennt ein Ergebnis NIE vor Epochenschluss.
 Es gibt keinen Angreifer-Input im Seed mehr (der fruehere attackDigest war ein Grinding-Eingang fuer
 den Keeper — K1, kritisch, behoben).
-Verbleibende Keeper-Macht: verzoegern (Epoche startet spaeter) oder nicht enthuellen. Preis:
-1. Versaeumte Enthuellung (2h nach Epochenende) = Epoche FAILED, jeder verliert, auch der Keeper.
+Enthuellen ist NUR bis zum Epochenende erlaubt (C6) — der Keeper sieht den Post-Close-Hash nie zuerst.
+Verbleibende Keeper-Macht: innerhalb der Epoche spaet enthuellen oder gar nicht. Preis:
+1. Keine Enthuellung bis Epochenende = Epoche FAILED, jeder verliert, auch der Keeper.
 2. Slash = max(slashPerMiss, aktueller Pot) aus der Kaution in den Pot — Zurueckhalten kostet
    mindestens das, was auf dem Spiel stand. `attack()` verweigert, solange die Kaution den Pot
    nicht deckt (bondOk).
@@ -139,6 +143,8 @@ Verbleibende Keeper-Macht: verzoegern (Epoche startet spaeter) oder nicht enthue
 Restvertrauen, dokumentiert: der Post-Close-Blockhash stammt vom RH-Sequencer, der nichts zu
 gewinnen hat. Wer auch das nicht will: CCIP-Relay ueber proposeVrf. chain.json ist ein pot-wertiges
 Geheimnis und wird wie der Keeper-Key behandelt.
+Griefing, dokumentiert (C7): jeder kann per `fundPot` den Pot ueber die Kaution heben und damit
+Angriffe sperren, bis der Keeper nachschiesst — auf eigene Kosten, das Geld bleibt im Pot.
 Rollen: Multisig setzt/ersetzt den Keeper; Keeper committed, hinterlegt Kaution, enthuellt am Start;
 jeder darf captureClose, tally, settle, slash.
 

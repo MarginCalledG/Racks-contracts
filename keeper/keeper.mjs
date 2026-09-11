@@ -41,6 +41,7 @@ async function tick() {
   }
   // 2) for every closed epoch: capture post-close entropy, tally, settle
   for (let e = from; e < cur; e++) {
+    // two-step capture: first call fixes a future block, the next call (a later block) freezes its hash
     if (!(await seed.resolved(e))) { try { await (await seed.captureClose(e)).wait(); } catch {} }
     if (!(await seed.resolved(e))) continue;                 // failed or still no entropy
     if (!(await agent.tallied(e))) { console.log(`tally ${e}`); await (await agent.tally(e, 200)).wait(); continue; }
@@ -53,4 +54,5 @@ async function tick() {
 
 console.log(`keeper ${wallet.address} — next reveal idx ${state.nextIdx}`);
 await tick();
-setInterval(() => tick().catch(console.error), 5 * 60 * 1000);   // every 5 min; reveals land within minutes of an epoch end
+// C1: the close hash must be frozen within 256 blocks of being fixed (~64 s on RH). Tick fast.
+setInterval(() => tick().catch(console.error), 15 * 1000);

@@ -410,6 +410,22 @@ unrevealed, $99 verloren. Fix: `reclaimUnrevealed` nach 7 Tagen mit Erstattung a
 Restvertrauen, explizit: der Close-Blockhash stammt vom RH-Sequencer (kein Stake). Entfernbar nur
 ueber CCIP (proposeVrf-Pfad). chain.json ist als pot-wertiges Geheimnis im Runbook markiert.
 
+## Runde 20 — C-Serie: dieselbe Luecke im zweiten Baustein
+**C1 (kritisch, mein Fehler von gestern).** `captureClose` nahm den Hash des VORBLOCKS der ersten
+Transaktion nach Epochenende — permissionless und lazy. Mit oeffentlichem Urbild rechnet ein Spieler
+fuer jeden neuen Block den Kandidaten-Seed aus und fasst die Epoche erst an, wenn ihm das Ergebnis
+gefaellt (PoC: 185 Bloecke warten, 100% des Pots). "no single party picks the block" war falsch — die
+erste Partei tat genau das. Fix nach Auditor-Vorschlag, zwei Schritte: der erste Toucher fixiert nur
+eine ZUKUENFTIGE Blocknummer (Hash unbekannt), eine spaetere Transaktion innerhalb von 256 Bloecken
+friert den Hash ein (nur festhalten, nicht waehlen); bei Verfall neue Zukunftsnummer. Tests testC1_*.
+Keeper-Bot tickt 15 s statt 5 min, damit das Einfrieren innerhalb der ~64 s auf RH sicher passiert.
+**C5 (mittel, das Y1-Muster erneut).** `reap` (3 Tage) sperrte `reclaimUnrevealed` (7 Tage) ueber
+`!dead`. Fix: eigenes `refunded`-Flag als Einmal-Schutz, `dead` sperrt nicht. Test testC5.
+**C6.** Reveal war bis 2h nach Schluss erlaubt — dann kannte der Keeper den Seed vor dem Reveal.
+Jetzt nur bis Epochenende ("epoch over"); Slash ab Epochenende.
+**C7.** `fundPot` kann den Pot ueber die Kaution heben und Angriffe sperren — Griefing auf eigene
+Kosten, dokumentiert in STATUS.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

@@ -193,12 +193,14 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     // ---- K3: a mint whose epoch never gets a seed (keeper gone) must not lose its fee ----
     uint256 public constant UNREVEALED_AFTER = 7 days;
     event MintRefunded(uint256 indexed id, address indexed to);
+    mapping(uint256 => bool) public refunded;   // C5: one-shot flag; `dead` must not block the refund
     function reclaimUnrevealed(uint256 id) external nonReentrant {
         R storage r = agents[id];
-        require(!revealed(id) && !r.dead, "n/a");
+        require(!revealed(id) && !refunded[id], "n/a");
         require(block.timestamp > uint256(r.lastFed) + UNREVEALED_AFTER, "too early");
         address o = ownerOf(id);
-        r.dead = true; livingCount--; ownedLiving[o]--;
+        refunded[id] = true;
+        if (!r.dead) { r.dead = true; livingCount--; ownedLiving[o]--; }   // reap may have run first
         require(usdg.transferFrom(reserve, o, MINT_PRICE), "refund");
         emit MintRefunded(id, o);
     }

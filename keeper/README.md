@@ -9,6 +9,14 @@ max(floor, current pot) from its bond into the pot. Attacks are refused while th
 
 **chain.json is a pot-sized secret.** Anyone holding it can act as keeper; treat it like the keeper key.
 
+Post-close entropy is captured in TWO steps: the first transaction after an epoch's end fixes a
+FUTURE block number (its hash does not exist yet, so nobody gains by choosing when to touch); a later
+transaction freezes that block's hash (it can only be recorded, not chosen). The freeze must happen
+within 256 blocks (~64 s on RH), so the bot ticks every 15 s. If the window lapses, a new future block
+is fixed — still unknowable.
+
+Reveal is only accepted BEFORE the epoch ends: the keeper can never see the post-close hash first.
+
 Residual trust (documented, not solved): the post-close block hash is produced by Robinhood's
 sequencer, which has no stake in the game. Removing even that is the CCIP upgrade path (proposeVrf).
 
