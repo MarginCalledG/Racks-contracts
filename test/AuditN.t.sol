@@ -5,7 +5,7 @@ import {Racks} from "../src/Racks.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
 
 /// A custodial fee-router like the sniper bots use: takes tokens, keeps a cut, forwards the rest.
 contract FeeRouter {
@@ -66,13 +66,14 @@ contract AuditN is Test {
 
     // N3 BLOCKED: settle is O(1) regardless of how many empty epochs came before
     function testN3_SettleIsConstantGas() public {
-        MockERC20 usdg = new MockERC20(); MockVRF vrf = new MockVRF();
+        MockERC20 usdg = new MockERC20(); MockSeed vrf = new MockSeed();
         CaymanIslands v = new CaymanIslands(address(k), address(usdg), address(this));
         IRSAgent ag = new IRSAgent(address(usdg), address(v), address(vrf), address(this));
         ag.setPaused(false);   // MockVRF has code; casino starts paused by default
         v.setAgent(address(ag));
         vm.warp(block.timestamp + 3000 * 8 hours);        // ~2.7 years of empty epochs
         uint32 e = ag.currentEpoch() - 1;
+        vrf.set(e, keccak256("n3"));               // the epoch needs a seed to be settleable
         uint256 g0 = gasleft();
         ag.settle(e);
         uint256 used = g0 - gasleft();

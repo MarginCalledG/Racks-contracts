@@ -9,7 +9,7 @@ import {MockERC20} from "./MockERC20.sol";
 
 contract AgentHandler is Test {
     Racks public k; CaymanIslands public vault; IRSAgent public agent; MockERC20 public usdg;
-    address[] public users; uint256 public seed;
+    address[] public users;
     constructor() {
         k = new Racks(1e27 / 1e6); usdg = new MockERC20();
         vault = new CaymanIslands(address(k), address(usdg), address(0xFEE));
@@ -26,13 +26,18 @@ contract AgentHandler is Test {
         }
         vm.prank(users[0]); vault.lock(0, 500_000 ether); // pot source
     }
-    // VRF coordinator role: synchronous pseudo-random fulfillment
     function unpause() external { agent.setPaused(false); }
 
-    function requestRandom(address cb) external returns (uint256 id) {
-        id = ++seed;
-        IRSAgent(cb).rawFulfill(id, uint256(keccak256(abi.encode(seed, block.timestamp, cb))));
+    // ---- seed-source role: the handler IS the randomness source (deterministic per epoch) ----
+    mapping(uint32 => bool) public failedEp;
+    function seed(uint32 e) public view returns (bytes32) {
+        if (e >= agent.currentEpoch() || failedEp[e]) return bytes32(0);   // only closed, non-failed epochs
+        return keccak256(abi.encode("inv", e));
     }
+    function failed(uint32 e) external view returns (bool) { return failedEp[e]; }
+    function resolved(uint32 e) external view returns (bool) { return e < agent.currentEpoch(); }
+    /// the keeper occasionally withholds: an epoch fails (everyone misses)
+    function withhold(uint256 ep) public { uint32 e = uint32(bound(ep, 0, agent.currentEpoch())); if (!agent.settled(e)) failedEp[e] = true; }
     function _u(uint256 s) internal view returns (address) { return users[s % users.length]; }
     function _owner(uint256 id) internal view returns (address o, bool ok) {
         try agent.ownerOf(id) returns (address ow) { return (ow, true); } catch { return (address(0), false); }

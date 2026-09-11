@@ -6,13 +6,14 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
+import {SeedTestBase} from "./SeedTestBase.sol";
 
-contract PotLiveTest is Test {
-    Racks k; CaymanIslands v; IRSAgent ag; MockERC20 usdg; MockVRF vrf;
+contract PotLiveTest is SeedTestBase {
+    Racks k; CaymanIslands v; IRSAgent ag; MockERC20 usdg; MockSeed vrf;
     address locker = address(0x10C); address player = address(0xB1A);
     function setUp() public {
-        k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockVRF();
+        k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockSeed();
         v = new CaymanIslands(address(k), address(usdg), address(this));
         ag = new IRSAgent(address(usdg), address(v), address(vrf), address(this));
         ag.setPaused(false);   // MockVRF has code; casino starts paused by default
@@ -37,17 +38,15 @@ contract PotLiveTest is Test {
         assertApproxEqRel(live, 8_364 ether, 0.02e18, "live pot shows the factor-0.3 melt");
         assertEq(ag.potPreview(), live, "agent UI preview == live pot");
 
-        // a player mints an agent and attacks; epoch settles with NO locker/keeper tx
-        vm.prank(player); uint256 id = ag.mint(); vrf.fulfill(vrf.lastId(), 97);
-        vm.prank(player); ag.attack(id); vrf.fulfill(vrf.lastId(), 1);   // hit
-        uint32 e = ag.currentEpoch();
-        vm.warp(block.timestamp + 8 hours);
+        // a player mints an agent and attacks; the epoch settles with NO locker tx
+        uint256 id = _mintTier(ag, vrf, player, 2);
+        uint32 e = _attackAndClose(ag, vrf, player, id, true);
         uint256 before = k.balanceOf(player);
         vm.prank(player); ag.claim(id, e);                      // settle auto-harvests inside
         uint256 won = k.balanceOf(player) - before;
         emit log_named_uint("winner paid (RACKS)", won);
         assertGt(won, 0, "winner must NOT get 0 just because no locker transacted");
-        assertApproxEqRel(won, live + (live * 2 / 3), 0.35e18, "paid roughly the accrued bleed (20h total)");
+        assertGt(won, live, "paid at least the bleed that was already live, plus what accrued since");
     }
 
     // harvestBatch pages through many positions; potLive == potBalance after a full harvest

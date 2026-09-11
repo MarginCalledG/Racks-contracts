@@ -6,6 +6,7 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {TwapOracle} from "../src/TwapOracle.sol";
+import {HashChainSeed} from "../src/HashChainSeed.sol";
 
 interface IV2Factory { function createPair(address,address) external returns (address); function getPair(address,address) external view returns (address); }
 interface IV2Router { function addLiquidity(address,address,uint256,uint256,uint256,uint256,address,uint256) external returns (uint256,uint256,uint256); }
@@ -28,18 +29,20 @@ contract DeployScript is Script {
     uint256 constant SPY_SEED = 6.45 ether;          // ~$5k seed
     uint256 constant RAY      = 1e27;
     uint256 constant SWAP_THRESHOLD = 1_000_000 ether;   // min accrued tax before a conversion fires
+    uint256 constant SLASH_PER_MISS = 1_000_000 ether;   // keeper bond slashed per withheld epoch
 
-    struct Cfg { address me; address vrf; address reserve; address taxWallet; address multisig; address lpDestination; }
+    struct Cfg { address me; address vrf; address reserve; address taxWallet; address multisig; address lpDestination; address keeper; }
 
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         Cfg memory c = Cfg({
             me: vm.addr(pk),
-            vrf: vm.envAddress("VRF_COORDINATOR"),      // see STATUS.md — VRF is still open on RH
+            vrf: address(0),                            // replaced by HashChainSeed below
             reserve: vm.envAddress("RESERVE"),
             taxWallet: vm.envAddress("TAX_WALLET"),
             multisig: vm.envAddress("MULTISIG"),
-            lpDestination: vm.envAddress("LP_DESTINATION")  // 0x...dEaD burns the LP
+            lpDestination: vm.envAddress("LP_DESTINATION"),  // 0x...dEaD burns the LP
+            keeper: vm.envAddress("KEEPER")                   // hot-wallet of the reveal bot
         });
 
         vm.startBroadcast(pk);
@@ -47,9 +50,14 @@ contract DeployScript is Script {
         // ---- 1. core ----
         Racks racks = new Racks(RAY / 1e6);
         CaymanIslands vault = new CaymanIslands(address(racks), USDG, c.reserve);
-        // The agent casino stays PAUSED until a real randomness source exists on this chain.
-        // A codeless placeholder would brick mint(); a permissionless mock would hand the pot away.
-        IRSAgent agents = new IRSAgent(USDG, address(vault), c.vrf, c.reserve);
+        // Randomness: one pre-committed hash-chain value per epoch (see keeper/README.md).
+        // The source needs the agent and the agent needs the source: deploy the source with agent=0,
+        // then the agent, then set the agent on the source (one-shot).
+        HashChainSeed seedSrc = new HashChainSeed(address(racks), address(vault), address(0), SLASH_PER_MISS);
+        IRSAgent agents = new IRSAgent(USDG, address(vault), address(seedSrc), c.reserve);
+        seedSrc.setAgent(address(agents));
+        seedSrc.setKeeper(c.keeper);
+        racks.setExempt(address(seedSrc), true);       // the bond must not melt
         vault.setAgent(address(agents));   // FINAL: the pot pointer can never be changed again
         racks.setVault(address(vault));
         racks.setExempt(address(vault), true);      // locked RACKS must not lazy-melt
@@ -104,6 +112,7 @@ contract DeployScript is Script {
         vault.transferOwnership(c.multisig);
         agents.transferOwnership(c.multisig);
         oracle.transferOwnership(c.multisig);
+        seedSrc.transferOwnership(c.multisig);
 
         vm.stopBroadcast();
 
@@ -124,7 +133,9 @@ contract DeployScript is Script {
         require(vault.pendingOwner() == c.multisig, "vault handover not started");
         require(agents.pendingAdmin() == c.multisig, "agents handover not started");
         require(oracle.pendingOwner() == c.multisig, "oracle handover not started");
-        require(agents.paused(), "agents must stay paused until VRF is real");
+        require(seedSrc.pendingOwner() == c.multisig, "seed source handover not started");
+        require(address(seedSrc.agent()) == address(agents) && seedSrc.keeper() == c.keeper, "seed source not wired");
+        require(agents.paused(), "agents must stay paused until the keeper has committed a chain");
         require(vault.agent() == address(agents), "agent not set");
 
         deployedRacks = address(racks);
@@ -135,12 +146,12 @@ contract DeployScript is Script {
         console.log("Oracle  ", address(oracle));
         console.log("maxWallet (1%)", racks.maxWallet());
         console.log("LP sent to  ", c.lpDestination);
-        console.log("NEXT: multisig calls acceptOwnership() on ALL FOUR:");
-        console.log("       racks, vault, agents, oracle - until then the deployer still controls them");
-        console.log("NEXT: agents stay PAUSED until a real VRF exists.");
-        console.log("      Wire it INSIDE the agent: proposeVrf -> 7d -> executeVrf -> setPaused(false)");
-        console.log("      The vault's agent pointer is FINAL and cannot be changed.");
-        console.log("LATER: agents.renounceVrfControl() once the randomness source is settled");
+        console.log("NEXT: multisig calls acceptOwnership() on ALL FIVE:");
+        console.log("       racks, vault, agents, oracle, seedSrc - until then the deployer still controls them");
+        console.log("SeedSrc ", address(seedSrc));
+        console.log("NEXT (keeper): generate chain, commit(chainEnd, N), depositBond -> see keeper/README.md");
+        console.log("NEXT (multisig): acceptOwnership on ALL FIVE, then agents.setPaused(false) after audit");
+        console.log("LATER: agents.renounceVrfControl() once the source is settled");
         console.log("RUNBOOK: reserve MUST approve the agent for USDG, else refunds revert.");
         console.log("         verify with agents.refundsReady() before the casino is unpaused.");
         console.log("LATER: racks.renounceExemptControl() - IRREVERSIBLE, blocks all future exemptions");

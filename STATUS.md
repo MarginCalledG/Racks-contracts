@@ -120,6 +120,29 @@ Launch-Stunde OK, zweiter Kauf ueber dem Cap revertet, Kauf+Verkauf ueber einen 
 ohne Keeper OK.
 NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `renounceExemptControl()`.
 
+## ZUFALLSQUELLE (src/HashChainSeed.sol + keeper/)
+Ein Seed pro Epoche statt einer Zufallszahl pro Angriff. Der Keeper wuerfelt N Werte VORAB, verkettet
+sie per Hash und committed nur das Kettenende on-chain; pro Epoche deckt er den naechsten Wert auf,
+der Contract prueft `keccak(preimage) == head`. Die Werte stehen damit fest, bevor ein Agent existiert
+— der Keeper kann sie nicht waehlen. Der Seed wird mit dem Digest der Angreifer der Epoche gemischt:
+niemand (auch der Keeper nicht) kennt ein Ergebnis, bevor die Epoche geschlossen ist.
+Die zwei Keeper-Regeln — seine einzige Macht ist Zurueckhalten, und das ist wertlos:
+1. Versaeumtes Aufdecken (2h-Fenster nach Epochenende) = Epoche FAILED: jeder Angriff verliert,
+   auch die Agents des Keepers. `slash()` ist permissionless.
+2. Jedes Versaeumnis kostet `slashPerMiss` aus der Kaution des Keepers — direkt in den Agent-Pot.
+Rollen: Multisig (Owner) setzt/ersetzt den Keeper; Keeper (Hot-Key/Bot) committed, hinterlegt Kaution,
+deckt auf; jeder darf slashen und settlen. Quelle austauschbar ueber IRSAgent.proposeVrf (7 Tage),
+danach renounceVrfControl.
+Agent-Umbau: attack() REGISTRIERT nur noch (attackDigest); `tally(e, count)` scored die Angreifer
+seitenweise gegen den Seed; `settle(e)` verlangt Seed + vollstaendiges Tally. Tier eines Agents =
+aus dem Seed seiner Mint-Epoche (bzw. der ersten spaeteren nicht-failed Epoche). Die gesamte
+Pro-Request-VRF-Maschinerie (reqs, rawFulfill, pendingAttacks, Grace, Late-Fulfill, Stuck-Mint-
+Refund) ist ERSATZLOS ENTFERNT — es gibt keine Requests mehr, also nichts, was zu spaet kommen kann.
+Betrieb: keeper/generate-chain.mjs (einmalig, chain.json GEHEIM + Backup), keeper/keeper.mjs
+(alle 5 min: reveal -> tally -> settle, plus meltPool/swapTax als Fallback). Details keeper/README.md.
+Deploy: HashChainSeed wird mitdeployt (Env KEEPER), Ownership geht an die Multisig (jetzt FUENF
+Contracts), Self-Check prueft Verdrahtung. Entpausen erst nach Commit + Kaution + Audit der Quelle.
+
 ## VERTRAUENSANNAHMEN GEGENUEBER DER MULTISIG (gehoert woertlich in den Launch-Text)
 Auch nach renounceExemptControl und Ownership-Uebergabe verbleiben beim Owner:
 - `setTaxExempt` — steuerfreies Trading fuer Einzeladressen
@@ -136,12 +159,12 @@ Auch nach renounceExemptControl und Ownership-Uebergabe verbleiben beim Owner:
 - [x] Alle Code-Findings der 17 Audit-Runden gefixt und verifiziert (Abschlussbericht 10.09.2026)
 - [ ] Push auf GitHub mit `git rm` fuer geloeschte Dateien; Clean-Clone-Build als Pflicht vor jedem Push
 - [ ] W-Term und Pot-Seed schriftlich entscheiden; Seed-Betrag ins Deploy-Skript
-- [ ] Multisig-Runbook: `acceptOwnership()` x4 innerhalb von Minuten nach dem Skript; USDG-Allowance
-      der Reserve fuer den Agent, `refundsReady()` vor jedem Unpause; `renounceExemptControl()` erst
-      nach Abwaegung (irreversibel)
+- [ ] Multisig-Runbook: `acceptOwnership()` x5 innerhalb von Minuten nach dem Skript;
+      `renounceExemptControl()` erst nach Abwaegung (irreversibel)
 - [ ] Cron fuer `meltPool()` (alle 30 min) und `swapTax()` als Fallback — Self-Heal und Bounty tragen,
       aber nachts handelt niemand
-- [ ] IRSAgent nicht unpausen, bevor die Zufallsquelle steht und selbst auditiert ist
+- [ ] Keeper: Kette generieren, committen, Kaution hinterlegen; HashChainSeed separat auditieren;
+      erst dann IRSAgent.setPaused(false)
 - [ ] Bot-Kompatibilitaet live auf Testnet gegen GoPlus / honeypot.is: Sell-Simulation muss zu jeder
       Sekunde gruen sein
 - [ ] Externes Audit mit AUDIT.md als Startpunkt; Scope src/ + script/
@@ -149,13 +172,9 @@ Auch nach renounceExemptControl und Ownership-Uebergabe verbleiben beim Owner:
 ## OFFEN
 1. Repo: v4-Schicht ist ENTFERNT (Clean-Clone-Build gruen). Auf GitHub per git rm nachziehen —
    'Add files via upload' loescht nichts.
-3a. `reserve` muss dem IRSAgent eine USDG-Allowance geben und gedeckt sein — sonst scheitert
-   `reclaimStuckMint` (Erstattung fuer Mints, die eine VRF-Umstellung oder ein Ausfall haengen
-   laesst). Vor dem Entpausen mit `agents.refundsReady()` pruefen.
-3. VRF: Chainlink VRF laeuft NICHT auf RH (nur Data Feeds/Streams/CCIP). IRSAgent startet deshalb
-   `paused = true`; `setPaused(false)` verlangt einen VRF mit Code. Empfehlung: EIN Zufalls-Seed pro
-   Epoche via CCIP-Relay von Arbitrum One; Treffer = hash(seed, agentId). Beseitigt zugleich die
-   ganze Klasse der VRF-Timing-Exploits. Entscheidung offen — bis dahin bleibt das Casino aus.
+3. ZUFALL: GELOEST durch src/HashChainSeed.sol (ein Seed pro Epoche aus einer vorab festgelegten
+   Hash-Kette) — siehe Abschnitt ZUFALLSQUELLE. Das Casino bleibt pausiert, bis der Keeper eine Kette
+   committed und die Kaution hinterlegt hat und die Quelle separat auditiert ist.
 6. Pot-Seed ist NOETIG, nicht optional, wenn am ersten Tag geraidet werden soll. Der Pot speist sich
    ausschliesslich aus den drei Lock-Bleeds: Pot_in = 0,3*r_w*V1d + 0,2*r_w*V3d + 0,1*r_w*V14d.
    Unlocked-Melt und Pool-Melt werden GEBRANNT und tragen nichts bei (kein W-Term). Ohne Locker ist

@@ -6,11 +6,12 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
+import {SeedTestBase} from "./SeedTestBase.sol";
 
 
 /// Audit regression suite: every exploit found must now be BLOCKED.
-contract AuditFixes is Test {
+contract AuditFixes is SeedTestBase {
     Racks k;
     address attacker = address(0xBAD);
     address victim   = address(0xB1C);
@@ -42,36 +43,22 @@ contract AuditFixes is Test {
         k2.enableTrading();
     }
 
-    // A2: an unknown / replayed VRF request id is rejected instead of corrupting epoch-0 shares
-    function testFixed_UnknownVrfRequestRejected() public {
-        MockERC20 usdg = new MockERC20(); MockVRF vrf = new MockVRF();
-        CaymanIslands vault = new CaymanIslands(address(k), address(usdg), address(this));
-        IRSAgent ag = new IRSAgent(address(usdg), address(vault), address(vrf), address(this));
-        ag.setPaused(false);   // MockVRF has code; casino starts paused by default
-        vm.prank(address(vrf));
-        vm.expectRevert(bytes("unknown req"));
-        ag.rawFulfill(999, 42);
-    }
 
     // A5: an epoch's unclaimed prize is swept back into the pot after the claim window
     function testFixed_StaleUnclaimedPrizeSwept() public {
-        MockERC20 usdg = new MockERC20(); MockVRF vrf = new MockVRF();
+        MockERC20 usdg = new MockERC20(); MockSeed src = new MockSeed();
         CaymanIslands vault = new CaymanIslands(address(k), address(usdg), address(this));
-        IRSAgent ag = new IRSAgent(address(usdg), address(vault), address(vrf), address(this));
-        ag.setPaused(false);   // MockVRF has code; casino starts paused by default
+        IRSAgent ag = new IRSAgent(address(usdg), address(vault), address(src), address(this));
+        ag.setPaused(false);
         k.setVault(address(vault)); k.setExempt(address(vault), true); k.setTaxExempt(address(vault), true);
         vault.setAgent(address(ag)); k.setTaxExempt(address(ag), true);
-        // fund a pot by donating RACKS to the vault (simulates bleed), win an epoch, never claim
         k.mint(address(this), 1_000 ether); k.approve(address(vault), type(uint256).max); vault.fundPot(1_000 ether);
         usdg.mint(attacker, 1_000 ether);
-        vm.startPrank(attacker); usdg.approve(address(ag), type(uint256).max);
-        uint256 id = ag.mint(); vm.stopPrank();
-        vrf.fulfill(vrf.lastId(), 97);
-        vm.prank(attacker); ag.attack(id); vrf.fulfill(vrf.lastId(), 1);   // hit
-        uint32 e = ag.currentEpoch();
-        vm.warp(block.timestamp + 8 hours); ag.settle(e);
+        vm.prank(attacker); usdg.approve(address(ag), type(uint256).max);
+        uint256 id = _mintTier(ag, src, attacker, 0);
+        uint32 e = _attackAndClose(ag, src, attacker, id, true);
+        ag.settle(e);
         assertGt(ag.allocatedPot(), 0, "prize allocated");
-        // 90 epochs later nobody claimed -> sweep releases it back to the pot
         vm.warp(block.timestamp + 91 * 8 hours);
         ag.sweepStale(e);
         assertEq(ag.allocatedPot(), 0, "unclaimed prize returned to pot");

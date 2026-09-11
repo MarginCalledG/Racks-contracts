@@ -12,7 +12,12 @@ interface ICaymanPot {
     function harvestBatch(uint256 from, uint256 count) external;
     function activeCount() external view returns (uint256);
 }
-interface IVRFCoordinatorR { function requestRandom(address cb) external returns (uint256); }
+/// one seed per epoch (HashChainSeed or any future source with the same shape)
+interface ISeedSource {
+    function seed(uint32 e) external view returns (bytes32);
+    function failed(uint32 e) external view returns (bool);
+    function resolved(uint32 e) external view returns (bool);
+}
 
 /// @title IRSAgent / "IRS Agent" (Stage 3, ERC721) — VRF ranks, epoch raids, pari-mutuel payout
 contract IRSAgent is ERC721, ReentrancyGuard {
@@ -29,7 +34,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
 
     IERC20r public immutable usdg;
     ICaymanPot public immutable vault;
-    IVRFCoordinatorR public vrf;
+    ISeedSource public seedSource;
     address public reserve;
     address public admin;
     uint256 public immutable startTime;
@@ -37,12 +42,10 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     uint256 public livingCount;
     uint256 public nextId = 1;
 
-    struct R { uint8 tier; uint40 lastFed; uint32 lastAtkEpoch1; bool revealed; bool dead; }
+    struct R { uint40 lastFed; uint32 lastAtkEpoch1; uint32 mintEpoch; bool dead; }
     mapping(uint256 => R) public agents;
     mapping(address => uint256) public ownedLiving;
 
-    struct Req { uint8 kind; uint256 agentId; uint32 epoch; uint40 placedAt; address payer; }
-    mapping(uint256 => Req) internal reqs;
 
     mapping(uint32 => uint256) public totalShares;
     mapping(uint32 => uint256) public rewardPerShareRay;
@@ -57,23 +60,25 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     uint256 public autoHarvest = 25; // positions harvested inside settle() (bounded gas); keepers page the rest
     uint256 public harvestCursor;     // E4 fix: rotating start index so spam can't starve real positions
     uint32 public settledThrough;     // F1: every epoch < settledThrough is settled
-    uint256 public constant SETTLE_GRACE = 10 minutes; // E1/E2 fix: let VRF results land before settling
-    mapping(uint32 => uint256) public pendingAttacks;   // unfulfilled attack requests per epoch
+    // attacks are only REGISTERED during the epoch; outcomes are derived once the epoch's seed exists
+    mapping(uint32 => uint256[]) internal _attackers;   // agent ids that attacked in epoch e
+    mapping(uint32 => bytes32) public attackDigest;     // running hash of attackers, mixed into the seed
+    mapping(uint32 => uint256) public tallyCursor;      // how many attackers of e have been scored
     mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
     uint256 public constant DUST = 1e9;   // 1e-9 RACKS: below any economically claimable prize
     uint32 public constant CLAIM_WINDOW = 90;          // epochs (~30 days) to claim before sweep
 
     event Minted(uint256 indexed id, address indexed owner);
-    event Revealed(uint256 indexed id, uint8 tier);
-    event Attacked(uint256 indexed id, uint32 epoch, bool hit);
+    event Tallied(uint32 indexed epoch, uint256 upTo);
+    event Attacked(uint256 indexed id, uint32 epoch);
     event Claimed(uint256 indexed id, uint32 epoch, uint256 amount);
 
     modifier onlyAdmin() { require(msg.sender == admin, "!admin"); _; }
 
-    constructor(address _usdg, address _vault, address _vrf, address _reserve)
+    constructor(address _usdg, address _vault, address _seed, address _reserve)
         ERC721("IRS Agent", "IRS")
     {
-        usdg = IERC20r(_usdg); vault = ICaymanPot(_vault); vrf = IVRFCoordinatorR(_vrf);
+        usdg = IERC20r(_usdg); vault = ICaymanPot(_vault); seedSource = ISeedSource(_seed);
         reserve = _reserve; admin = msg.sender; startTime = block.timestamp;
         uint256 u = 10 ** usdg.decimals();
         MINT_PRICE = 99 * u; FEED = [10 * u, 20 * u, 30 * u]; // decimal-aware
@@ -83,9 +88,29 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         return uint32((block.timestamp - startTime) / EPOCH);
     }
 
+    /// the seed that reveals an agent: its mint epoch's seed, or the first later non-failed one
+    function _revealSeed(uint256 id) internal view returns (bytes32) {
+        uint32 e = agents[id].mintEpoch; uint32 now_ = currentEpoch();
+        while (e < now_) {
+            if (seedSource.failed(e)) { e++; continue; }
+            bytes32 sd = seedSource.seed(e);
+            if (sd == bytes32(0)) return bytes32(0);
+            return sd;
+        }
+        return bytes32(0);
+    }
+    function revealed(uint256 id) public view returns (bool) { return _revealSeed(id) != bytes32(0); }
+    /// 0 common (75%) | 1 senior (20%) | 2 special (5%)
+    function tier(uint256 id) public view returns (uint8) {
+        bytes32 sd = _revealSeed(id);
+        require(sd != bytes32(0), "unrevealed");
+        uint256 w = uint256(keccak256(abi.encode(sd, id, "tier"))) % 100;
+        return w < 75 ? 0 : (w < 95 ? 1 : 2);
+    }
+
     function alive(uint256 id) public view returns (bool) {
         R storage r = agents[id];
-        return r.revealed && !r.dead && block.timestamp <= uint256(r.lastFed) + LIFE;
+        return revealed(id) && !r.dead && block.timestamp <= uint256(r.lastFed) + LIFE;
     }
 
     /// keep the per-wallet living count correct across NFT transfers
@@ -103,24 +128,22 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         require(livingCount < CAP, "cap");
         require(usdg.transferFrom(msg.sender, reserve, MINT_PRICE), "pay");
         id = nextId++;
-        agents[id] = R(0, uint40(block.timestamp), 0, false, false);
+        agents[id] = R(uint40(block.timestamp), 0, currentEpoch(), false);
         livingCount++;
         _mint(msg.sender, id); // _update bumps ownedLiving
-        uint256 rid = vrf.requestRandom(address(this));
-        reqs[rid] = Req(1, id, 0, uint40(block.timestamp), msg.sender);
-        emit Minted(id, msg.sender);
+        emit Minted(id, msg.sender);   // tier is revealed by this epoch's seed once the epoch closes
     }
 
     function feed(uint256 id) external nonReentrant {
         require(ownerOf(id) == msg.sender, "!owner");
         require(alive(id), "dead");
-        require(usdg.transferFrom(msg.sender, reserve, FEED[agents[id].tier]), "pay");
+        require(usdg.transferFrom(msg.sender, reserve, FEED[tier(id)]), "pay");
         agents[id].lastFed = uint40(block.timestamp);
     }
 
     function reap(uint256 id) external {
         R storage r = agents[id];
-        require(!r.dead, "n/a");                                       // F9: unrevealed zombies reapable too
+        require(!r.dead, "n/a");
         require(block.timestamp > uint256(r.lastFed) + LIFE, "alive");
         r.dead = true;
         livingCount--;
@@ -135,64 +158,32 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         uint32 e = currentEpoch();
         require(uint32(e + 1) > r.lastAtkEpoch1, "cooldown");
         r.lastAtkEpoch1 = e + 1;
-        if (pendingAttacks[e] == 0 && (activeEpochs.length == 0 || activeEpochs[activeEpochs.length - 1] != e)) activeEpochs.push(e);
-        pendingAttacks[e]++;
-        uint256 rid = vrf.requestRandom(address(this));
-        reqs[rid] = Req(2, id, e, uint40(block.timestamp), msg.sender);
+        if (_attackers[e].length == 0 && (activeEpochs.length == 0 || activeEpochs[activeEpochs.length - 1] != e)) activeEpochs.push(e);
+        _attackers[e].push(id);
+        attackDigest[e] = keccak256(abi.encode(attackDigest[e], id));   // mixed into the epoch seed
+        emit Attacked(id, e);
     }
+    function attackersOf(uint32 e) external view returns (uint256 n) { return _attackers[e].length; }
 
-    // ---- X6: rescue for requests the randomness source can no longer answer ----
-    // After a VRF change (or an outage) an in-flight mint would otherwise be stuck forever with the
-    // fee already paid. After STUCK_AFTER the payer can reclaim: the unrevealed agent is retired and
-    // the mint fee refunded from the reserve's allowance.
-    uint256 public constant STUCK_AFTER = 3 days;
-    event MintRefunded(uint256 indexed id, address indexed payer);
-    /// Y4: refunds pull USDG from `reserve`, so the reserve must approve this contract.
-    /// The multisig can check this before anyone needs a refund.
-    function refundsReady() external view returns (bool) {
-        return usdg.allowance(reserve, address(this)) >= MINT_PRICE && usdg.balanceOf(reserve) >= MINT_PRICE;
-    }
-
-    function reclaimStuckMint(uint256 reqId) external nonReentrant {
-        Req memory q = reqs[reqId];
-        require(q.kind == 1, "not a mint req");
-        require(block.timestamp > q.placedAt + STUCK_AFTER, "too early");
-        R storage r = agents[q.agentId];
-        // Y1: `dead` must NOT block the refund. LIFE and STUCK_AFTER are both 3 days, so a
-        // permissionless reap() lands in the same moment and would otherwise turn a refundable mint
-        // into a lost $99 for the price of gas. Deleting the request is the one-shot protection.
-        require(!r.revealed, "already resolved");
-        delete reqs[reqId];
-        if (!r.dead) { r.dead = true; livingCount--; ownedLiving[ownerOf(q.agentId)]--; }
-        require(usdg.transferFrom(reserve, q.payer, MINT_PRICE), "refund");
-        emit MintRefunded(q.agentId, q.payer);
-    }
-
-    function rawFulfill(uint256 reqId, uint256 word) external {
-        require(msg.sender == address(vrf), "!vrf");
-        Req memory q = reqs[reqId];
-        require(q.kind != 0, "unknown req");   // A2 fix: replay/unknown id must not corrupt state
-        delete reqs[reqId];
-        if (q.kind == 1) {
-            uint256 rr = word % 100;
-            uint8 tier = rr < 75 ? 0 : (rr < 95 ? 1 : 2);
-            agents[q.agentId].tier = tier;
-            agents[q.agentId].revealed = true;
-            emit Revealed(q.agentId, tier);
-        } else {
-            if (pendingAttacks[q.epoch] > 0) pendingAttacks[q.epoch]--;
-            // E1 fix: a result landing AFTER the epoch was settled must not mint phantom shares
-            if (settled(q.epoch)) { emit Attacked(q.agentId, q.epoch, false); return; }
-            R storage rab = agents[q.agentId];
-            bool hit = (word % 100) < HITRATE[rab.tier];
-            if (hit) {
-                uint256 w = WEIGHT[rab.tier];
-                shares[q.agentId][q.epoch] += w;
-                totalShares[q.epoch] += w;
+    /// score the attackers of a closed epoch against its seed, in pages. Permissionless.
+    /// A FAILED epoch (keeper withheld) scores everyone as a miss — the keeper's agents too.
+    function tally(uint32 e, uint256 count) public {
+        require(e < currentEpoch(), "open");
+        require(seedSource.resolved(e), "no seed yet");
+        uint256[] storage ids = _attackers[e];
+        uint256 i = tallyCursor[e]; uint256 to = i + count; if (to > ids.length) to = ids.length;
+        if (!seedSource.failed(e)) {
+            bytes32 sd = seedSource.seed(e);
+            for (; i < to; i++) {
+                uint256 id = ids[i];
+                bool hit = uint256(keccak256(abi.encode(sd, id, e))) % 100 < HITRATE[tier(id)];
+                if (hit) { uint256 w = WEIGHT[tier(id)]; shares[id][e] = w; totalShares[e] += w; }
             }
-            emit Attacked(q.agentId, q.epoch, hit);
-        }
+        } else { i = to; }
+        tallyCursor[e] = to;
+        emit Tallied(e, to);
     }
+    function tallied(uint32 e) public view returns (bool) { return tallyCursor[e] == _attackers[e].length; }
 
     function epochEnd(uint32 e) public view returns (uint256) { return startTime + (uint256(e) + 1) * EPOCH; }
 
@@ -202,8 +193,10 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         // settledThrough covers them. Only epochs that ever saw an attack are tracked, and the
         // earliest unsettled one of those must not lie before e.
         if (activeCursor < activeEpochs.length) require(activeEpochs[activeCursor] >= e, "prev");
-        // E2 fix: cannot settle until every attack's VRF result is in, or the grace period passed
-        require(pendingAttacks[e] == 0 || block.timestamp >= epochEnd(e) + SETTLE_GRACE, "results pending");
+        // outcomes exist only once the epoch's seed is in (or the epoch failed) and every attacker
+        // has been scored — no result can ever arrive "late" any more
+        require(seedSource.resolved(e), "no seed yet");
+        if (!tallied(e)) tally(e, type(uint256).max);
         if (settled(e)) return;
         _settledMap[e] = true;
         if (e + 1 > settledThrough) settledThrough = e + 1;
@@ -278,7 +271,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     // The vault's agent pointer is permanent, so the ONLY thing that ever needs replacing is the
     // randomness source (RH had none at launch). Timelocked so players see a change coming, and
     // renounceable so it can be closed for good once a real VRF is settled.
-    uint256 public constant VRF_DELAY = 7 days;
+    uint256 public constant VRF_DELAY = 7 days;   // kept name: 'vrf' = the seed source
     address public pendingVrf;
     uint256 public pendingVrfAt;
     bool public vrfFinal;
@@ -295,19 +288,19 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     function executeVrf() external onlyAdmin {
         require(!vrfFinal, "vrf final");
         require(pendingVrf != address(0) && block.timestamp >= pendingVrfAt, "timelock");
-        emit VrfChanged(address(vrf), pendingVrf);
-        vrf = IVRFCoordinatorR(pendingVrf); pendingVrf = address(0); pendingVrfAt = 0;
+        emit VrfChanged(address(seedSource), pendingVrf);
+        seedSource = ISeedSource(pendingVrf); pendingVrf = address(0); pendingVrfAt = 0;
     }
     function cancelVrf() external onlyAdmin { pendingVrf = address(0); pendingVrfAt = 0; }
     /// one-way: give up the ability to ever change the randomness source again
     function renounceVrfControl() external onlyAdmin {
-        require(address(vrf).code.length > 0, "no real vrf yet");
+        require(address(seedSource).code.length > 0, "no real vrf yet");
         vrfFinal = true; pendingVrf = address(0); pendingVrfAt = 0;
         emit VrfFinalised();
     }
 
     function setPaused(bool p_) external onlyAdmin {
-        if (!p_) require(address(vrf).code.length > 0, "vrf has no code");
+        if (!p_) require(address(seedSource).code.length > 0, "vrf has no code");
         paused = p_;
     }
     function setAutoHarvest(uint256 n) external onlyAdmin { autoHarvest = n; }

@@ -6,7 +6,7 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
 
 // Verifies USDG fees scale to the token's real decimals (6 on RH mainnet, not 18)
 contract DecimalsTest is Test {
@@ -17,7 +17,7 @@ contract DecimalsTest is Test {
         usdg = new MockERC20();
         usdg.setDecimals(dec);
         cay = new CaymanIslands(address(k), address(usdg), address(this));
-        ag  = new IRSAgent(address(usdg), address(cay), address(new MockVRF()), address(this));
+        ag  = new IRSAgent(address(usdg), address(cay), address(new MockSeed()), address(this));
         ag.setPaused(false);   // MockVRF has code; casino starts paused by default
     }
 

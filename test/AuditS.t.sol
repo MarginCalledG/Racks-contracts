@@ -5,7 +5,7 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
 
 contract SyncPair { function sync() external {} }
 
@@ -15,12 +15,12 @@ contract Drainer {
 }
 
 contract AuditS is Test {
-    Racks k; CaymanIslands v; IRSAgent ag; MockERC20 usdg; MockVRF vrf;
+    Racks k; CaymanIslands v; IRSAgent ag; MockERC20 usdg; MockSeed vrf;
     address deployer = address(this); address multisig = address(0x115);
     address locker = address(0x10C); address attackerWallet = address(0xBAD);
 
     function setUp() public {
-        k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockVRF();
+        k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockSeed();
         v = new CaymanIslands(address(k), address(usdg), address(0x8E5E));
         ag = new IRSAgent(address(usdg), address(v), address(vrf), address(0x8E5E));
         ag.setPaused(false);

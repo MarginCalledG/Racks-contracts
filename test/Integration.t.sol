@@ -7,14 +7,15 @@ import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {TwapOracle} from "../src/TwapOracle.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
+import {SeedTestBase} from "./SeedTestBase.sol";
 import {MockPair} from "./MockPair.sol";
 import {MockRouter, MockPrice} from "./MockSwap.sol";
 
 /// End-to-end journey against the fully-wired stack (mirrors Deploy.s.sol wiring).
-contract IntegrationTest is Test {
+contract IntegrationTest is SeedTestBase {
     Racks racks; CaymanIslands vault; IRSAgent agents; TwapOracle twap;
-    MockERC20 usdg; MockERC20 spy; MockVRF vrf; MockPair pair; MockRouter router; MockPrice price;
+    MockERC20 usdg; MockERC20 spy; MockSeed vrf; MockPair pair; MockRouter router; MockPrice price;
     address alice = address(0xA11CE);
     address taxWallet = address(0x7A11);
     address carol = address(0xCA401);
@@ -22,7 +23,7 @@ contract IntegrationTest is Test {
     uint256 constant RAY = 1e27;
 
     function setUp() public {
-        usdg = new MockERC20(); spy = new MockERC20(); vrf = new MockVRF();
+        usdg = new MockERC20(); spy = new MockERC20(); vrf = new MockSeed();
         pair = new MockPair(); pair.set(1_000_000 ether, 500_000 ether);
         router = new MockRouter(address(spy), 1, 2); price = new MockPrice(1, 2);
 
@@ -71,16 +72,10 @@ contract IntegrationTest is Test {
         vault.harvest(carol, 0);                     // carol is the short-locker; settle her bleed
         assertGt(vault.potBalance(), 0);
 
-        // alice deploys an IRS Agent, audits, claims
-        uint32 e = agents.currentEpoch();
-        vm.startPrank(alice);
-        usdg.approve(address(agents), type(uint256).max);
-        uint256 id = agents.mint();
-        vm.stopPrank();
-        vrf.fulfill(vrf.lastId(), 97);       // special tier
-        vm.prank(alice); agents.attack(id);
-        vrf.fulfill(vrf.lastId(), 0);        // audit hits
-        vm.warp(block.timestamp + 8 hours);
+        // alice deploys an IRS Agent (special), audits, claims
+        vm.prank(alice); usdg.approve(address(agents), type(uint256).max);
+        uint256 id = _mintTier(agents, vrf, alice, 2);
+        uint32 e = _attackAndClose(agents, vrf, alice, id, true);
         agents.settle(e);
         assertGt(agents.pending(id, e), 0);
         vm.prank(alice); agents.claim(id, e);

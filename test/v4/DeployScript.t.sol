@@ -18,7 +18,7 @@ contract DeployScriptTest is Test {
         address me = vm.addr(pk);
         deal(SPY, me, 100 ether);
         vm.setEnv("PRIVATE_KEY", vm.toString(pk));
-        vm.setEnv("VRF_COORDINATOR", vm.toString(address(0xF00D)));
+        vm.setEnv("KEEPER", vm.toString(address(0xEE1)));
         vm.setEnv("RESERVE", vm.toString(address(0x8E5E)));
         vm.setEnv("TAX_WALLET", vm.toString(address(0x7A11)));
         vm.setEnv("MULTISIG", vm.toString(address(0x11115)));

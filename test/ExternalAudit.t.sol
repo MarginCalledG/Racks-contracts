@@ -6,17 +6,18 @@ import {Racks} from "../src/Racks.sol";
 import {CaymanIslands} from "../src/CaymanIslands.sol";
 import {IRSAgent} from "../src/IRSAgent.sol";
 import {MockERC20} from "./MockERC20.sol";
-import {MockVRF} from "./MockVRF.sol";
+import {MockSeed} from "./MockSeed.sol";
+import {SeedTestBase} from "./SeedTestBase.sol";
 
 interface IW { function wrap(uint256) external returns (uint256); function unwrap(uint256) external returns (uint256); function balanceOf(address) external view returns (uint256); function transfer(address,uint256) external returns (bool); }
 
 /// External audit findings — every exploit must now be BLOCKED.
-contract ExternalAuditFixes is Test {
-    Racks k; CaymanIslands v; IRSAgent ag; MockERC20 usdg; MockVRF vrf;
+contract ExternalAuditFixes is SeedTestBase {
+    Racks k; CaymanIslands v; IRSAgent ag; MockERC20 usdg; MockSeed vrf;
     address locker = address(0x10C); address alice = address(0xA11CE); address bob = address(0xB0B);
 
     function setUp() public {
-        k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockVRF();
+        k = new Racks(1e27/1e6); usdg = new MockERC20(); vrf = new MockSeed();
         v = new CaymanIslands(address(k), address(usdg), address(this));
         ag = new IRSAgent(address(usdg), address(v), address(vrf), address(this));
         ag.setPaused(false);   // MockVRF has code; casino starts paused by default
@@ -28,20 +29,16 @@ contract ExternalAuditFixes is Test {
         vm.prank(alice); usdg.approve(address(ag), type(uint256).max);
         vm.prank(bob); usdg.approve(address(ag), type(uint256).max);
     }
-    function _agent(address who, uint256 word) internal returns (uint256 id) { vm.prank(who); id = ag.mint(); vrf.fulfill(vrf.lastId(), word); }
+    function _agent(address who, uint256) internal returns (uint256 id) { id = _mintTier(ag, vrf, who, 0); }
 
     // F1 BLOCKED: settle must be sequential
     function testF1_SettleMustBeSequential() public {
-        vm.prank(locker); v.lock(0, 5_000_000 ether);
-        uint256 aId = _agent(alice, 10); uint256 bId = _agent(bob, 10);
-        uint32 e0 = ag.currentEpoch();
-        vm.prank(alice); ag.attack(aId); vrf.fulfill(vrf.lastId(), 1);
-        vm.warp(block.timestamp + 8 hours);
-        uint32 e1 = ag.currentEpoch();
-        vm.prank(bob); ag.attack(bId); vrf.fulfill(vrf.lastId(), 1);
-        vm.warp(block.timestamp + 8 hours);
+        vm.prank(locker); v.lock(2, 5_000_000 ether);   // 14d: still bleeding after the mint epochs
+        uint256 aId = _agent(alice, 0); uint256 bId = _agent(bob, 0);
+        uint32 e0 = _attackAndClose(ag, vrf, alice, aId, true);
+        uint32 e1 = _attackAndClose(ag, vrf, bob, bId, true);
         vm.expectRevert(bytes("prev")); ag.settle(e1);                        // out of order refused
-        ag.settle(e0); vm.warp(block.timestamp + 1 hours); ag.settle(e1);      // e1 gets its own hour of bleed
+        ag.settle(e0); vm.warp(block.timestamp + 1 hours); ag.settle(e1);
         uint256 ab = k.balanceOf(alice); vm.prank(alice); ag.claim(aId, e0);
         uint256 bb = k.balanceOf(bob);   vm.prank(bob);   ag.claim(bId, e1);
         assertGt(k.balanceOf(alice) - ab, 0, "alice paid");
@@ -50,18 +47,15 @@ contract ExternalAuditFixes is Test {
 
     // F2 BLOCKED: a swept epoch cannot be claimed; bob keeps his full prize
     function testF2_SweptEpochNotClaimable() public {
-        vm.prank(locker); v.lock(0, 5_000_000 ether);
-        uint256 aId = _agent(alice, 10);
-        uint32 e0 = ag.currentEpoch();
-        vm.prank(alice); ag.attack(aId); vrf.fulfill(vrf.lastId(), 1);
-        vm.warp(block.timestamp + 8 hours); ag.settle(e0);
+        vm.prank(locker); v.lock(2, 5_000_000 ether);
+        uint256 aId = _agent(alice, 0);
+        uint32 e0 = _attackAndClose(ag, vrf, alice, aId, true);
+        ag.settle(e0);
         vm.warp(block.timestamp + 91 * 8 hours);
-        for (uint32 x = e0 + 1; x < ag.currentEpoch(); x++) ag.settle(x);    // sequential empties
         ag.sweepStale(e0);
-        uint256 bId = _agent(bob, 10);
-        uint32 e2 = ag.currentEpoch();
-        vm.prank(bob); ag.attack(bId); vrf.fulfill(vrf.lastId(), 1);
-        vm.warp(block.timestamp + 8 hours); ag.settle(e2);
+        uint256 bId = _agent(bob, 0);
+        uint32 e2 = _attackAndClose(ag, vrf, bob, bId, true);
+        ag.settle(e2);
         uint256 bobPrize = ag.pending(bId, e2);
         vm.prank(alice); vm.expectRevert(bytes("empty")); ag.claim(aId, e0);
         uint256 bb = k.balanceOf(bob); vm.prank(bob); ag.claim(bId, e2);

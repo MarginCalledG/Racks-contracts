@@ -378,6 +378,22 @@ Externer Abschlussbericht (13 Runden, 07.–10.09.2026): **keine offenen Code-Fi
 362k Gas (vorher 536k). Verbleibend: Design-Entscheidungen (W-Term, Pot-Seed, Zufallsquelle) und die
 Multisig-Vertrauensliste — beides Text, kein Code.
 
+## Runde 18 — Zufallsquelle gebaut: HashChainSeed + Epochen-Seed im Agenten
+Owner-Entscheidung: Pot wird jede Epoche geleert (Rule 1+2 verworfen); Zufall = vorab festgelegte
+Hash-Kette, ein Seed pro Epoche, mit den zwei Keeper-Regeln (Withhold = alle verlieren; Kaution).
+Sicherheitswirkung des Umbaus: die gesamte Klasse der VRF-Timing-Exploits (E1 Phantom-Shares,
+E2 Sofort-Settle, X6/Y1 Stuck-Mint) ist STRUKTURELL weg — es gibt keine Requests mehr. Der Agent ist
+mit 315 Zeilen kleiner als vorher (322) trotz neuem Tally.
+Getestet (test/HashChainSeed.t.sol, test/IRSAgent.t.sol): Reveal muss zur Kette passen, kein Replay,
+kein Reveal einer offenen Epoche; voller Ablauf Mint -> Reveal -> Attack -> Reveal -> Settle -> Claim
+mit der echten Quelle; Zurueckhalten -> permissionless Slash -> Kaution in den Pot -> jeder verliert;
+Mint in einer failed Epoche wird vom naechsten guten Seed enthuellt; nur der Keeper deckt auf, Kaution
+darf nicht unter eine Strafe fallen; Tally seitenweise; Settle ohne Seed unmoeglich.
+Invarianten-Handler ist jetzt selbst die Seed-Quelle und haelt zufaellig Epochen zurueck — Solvenz
+und Allokation halten weiter. Deploy-Skript deployt die Quelle mit (KEEPER-Env), fuenf Ownerships.
+NEU ZU AUDITIEREN (das eine ungeschriebene Kapitel, jetzt geschrieben): src/HashChainSeed.sol und die
+Tally-/Reveal-Logik in IRSAgent.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.
