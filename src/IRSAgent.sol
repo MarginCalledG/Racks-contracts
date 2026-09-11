@@ -17,6 +17,8 @@ interface ISeedSource {
     function seed(uint32 e) external view returns (bytes32);
     function failed(uint32 e) external view returns (bool);
     function resolved(uint32 e) external view returns (bool);
+    function bondOk() external view returns (bool);
+    function captureClose(uint32 e) external;
 }
 
 /// @title IRSAgent / "IRS Agent" (Stage 3, ERC721) — VRF ranks, epoch raids, pari-mutuel payout
@@ -62,7 +64,6 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     uint32 public settledThrough;     // F1: every epoch < settledThrough is settled
     // attacks are only REGISTERED during the epoch; outcomes are derived once the epoch's seed exists
     mapping(uint32 => uint256[]) internal _attackers;   // agent ids that attacked in epoch e
-    mapping(uint32 => bytes32) public attackDigest;     // running hash of attackers, mixed into the seed
     mapping(uint32 => uint256) public tallyCursor;      // how many attackers of e have been scored
     mapping(uint32 => uint256) public epochUnclaimed;  // A5: prize still unclaimed per epoch
     uint256 public constant DUST = 1e9;   // 1e-9 RACKS: below any economically claimable prize
@@ -156,11 +157,14 @@ contract IRSAgent is ERC721, ReentrancyGuard {
         require(alive(id), "dead");
         R storage r = agents[id];
         uint32 e = currentEpoch();
+        // K2: no play unless the keeper's bond covers what is at stake
+        require(seedSource.bondOk(), "keeper underbonded");
+        // first-touch entropy capture for the epoch that just closed
+        if (e > 0) seedSource.captureClose(e - 1);
         require(uint32(e + 1) > r.lastAtkEpoch1, "cooldown");
         r.lastAtkEpoch1 = e + 1;
         if (_attackers[e].length == 0 && (activeEpochs.length == 0 || activeEpochs[activeEpochs.length - 1] != e)) activeEpochs.push(e);
         _attackers[e].push(id);
-        attackDigest[e] = keccak256(abi.encode(attackDigest[e], id));   // mixed into the epoch seed
         emit Attacked(id, e);
     }
     function attackersOf(uint32 e) external view returns (uint256 n) { return _attackers[e].length; }
@@ -169,6 +173,7 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     /// A FAILED epoch (keeper withheld) scores everyone as a miss — the keeper's agents too.
     function tally(uint32 e, uint256 count) public {
         require(e < currentEpoch(), "open");
+        seedSource.captureClose(e);                       // harmless if already captured
         require(seedSource.resolved(e), "no seed yet");
         uint256[] storage ids = _attackers[e];
         uint256 i = tallyCursor[e]; uint256 to = i + count; if (to > ids.length) to = ids.length;
@@ -185,7 +190,24 @@ contract IRSAgent is ERC721, ReentrancyGuard {
     }
     function tallied(uint32 e) public view returns (bool) { return tallyCursor[e] == _attackers[e].length; }
 
+    // ---- K3: a mint whose epoch never gets a seed (keeper gone) must not lose its fee ----
+    uint256 public constant UNREVEALED_AFTER = 7 days;
+    event MintRefunded(uint256 indexed id, address indexed to);
+    function reclaimUnrevealed(uint256 id) external nonReentrant {
+        R storage r = agents[id];
+        require(!revealed(id) && !r.dead, "n/a");
+        require(block.timestamp > uint256(r.lastFed) + UNREVEALED_AFTER, "too early");
+        address o = ownerOf(id);
+        r.dead = true; livingCount--; ownedLiving[o]--;
+        require(usdg.transferFrom(reserve, o, MINT_PRICE), "refund");
+        emit MintRefunded(id, o);
+    }
+    function refundsReady() external view returns (bool) {
+        return usdg.allowance(reserve, address(this)) >= MINT_PRICE && usdg.balanceOf(reserve) >= MINT_PRICE;
+    }
+
     function epochEnd(uint32 e) public view returns (uint256) { return startTime + (uint256(e) + 1) * EPOCH; }
+    function epochStart(uint32 e) public view returns (uint256) { return startTime + uint256(e) * EPOCH; }
 
     function settle(uint32 e) public {
         require(e < currentEpoch(), "open");

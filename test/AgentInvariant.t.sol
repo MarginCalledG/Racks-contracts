@@ -36,6 +36,8 @@ contract AgentHandler is Test {
     }
     function failed(uint32 e) external view returns (bool) { return failedEp[e]; }
     function resolved(uint32 e) external view returns (bool) { return e < agent.currentEpoch(); }
+    function bondOk() external pure returns (bool) { return true; }
+    function captureClose(uint32) external {}
     /// the keeper occasionally withholds: an epoch fails (everyone misses)
     function withhold(uint256 ep) public { uint32 e = uint32(bound(ep, 0, agent.currentEpoch())); if (!agent.settled(e)) failedEp[e] = true; }
     function _u(uint256 s) internal view returns (address) { return users[s % users.length]; }

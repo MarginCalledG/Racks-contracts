@@ -120,28 +120,27 @@ Launch-Stunde OK, zweiter Kauf ueber dem Cap revertet, Kauf+Verkauf ueber einen 
 ohne Keeper OK.
 NACH dem Launch: `transferOwnership(multisig)` + `acceptOwnership()`, dann `renounceExemptControl()`.
 
-## ZUFALLSQUELLE (src/HashChainSeed.sol + keeper/)
-Ein Seed pro Epoche statt einer Zufallszahl pro Angriff. Der Keeper wuerfelt N Werte VORAB, verkettet
-sie per Hash und committed nur das Kettenende on-chain; pro Epoche deckt er den naechsten Wert auf,
-der Contract prueft `keccak(preimage) == head`. Die Werte stehen damit fest, bevor ein Agent existiert
-— der Keeper kann sie nicht waehlen. Der Seed wird mit dem Digest der Angreifer der Epoche gemischt:
-niemand (auch der Keeper nicht) kennt ein Ergebnis, bevor die Epoche geschlossen ist.
-Die zwei Keeper-Regeln — seine einzige Macht ist Zurueckhalten, und das ist wertlos:
-1. Versaeumtes Aufdecken (2h-Fenster nach Epochenende) = Epoche FAILED: jeder Angriff verliert,
-   auch die Agents des Keepers. `slash()` ist permissionless.
-2. Jedes Versaeumnis kostet `slashPerMiss` aus der Kaution des Keepers — direkt in den Agent-Pot.
-Rollen: Multisig (Owner) setzt/ersetzt den Keeper; Keeper (Hot-Key/Bot) committed, hinterlegt Kaution,
-deckt auf; jeder darf slashen und settlen. Quelle austauschbar ueber IRSAgent.proposeVrf (7 Tage),
-danach renounceVrfControl.
-Agent-Umbau: attack() REGISTRIERT nur noch (attackDigest); `tally(e, count)` scored die Angreifer
-seitenweise gegen den Seed; `settle(e)` verlangt Seed + vollstaendiges Tally. Tier eines Agents =
-aus dem Seed seiner Mint-Epoche (bzw. der ersten spaeteren nicht-failed Epoche). Die gesamte
-Pro-Request-VRF-Maschinerie (reqs, rawFulfill, pendingAttacks, Grace, Late-Fulfill, Stuck-Mint-
-Refund) ist ERSATZLOS ENTFERNT — es gibt keine Requests mehr, also nichts, was zu spaet kommen kann.
-Betrieb: keeper/generate-chain.mjs (einmalig, chain.json GEHEIM + Backup), keeper/keeper.mjs
-(alle 5 min: reveal -> tally -> settle, plus meltPool/swapTax als Fallback). Details keeper/README.md.
-Deploy: HashChainSeed wird mitdeployt (Env KEEPER), Ownership geht an die Multisig (jetzt FUENF
-Contracts), Self-Check prueft Verdrahtung. Entpausen erst nach Commit + Kaution + Audit der Quelle.
+## ZUFALLSQUELLE (src/HashChainSeed.sol + keeper/) — reveal-then-play
+Ein Seed pro Epoche aus ZWEI Komponenten, zwei Parteien, keine steuert allein:
+- Der vorab committete Kettenwert des Keepers, enthuellt am EPOCHENANFANG. Ab dann oeffentlich —
+  fuer niemanden ein Vorteil, denn er entscheidet allein nichts.
+- Ein Blockhash NACH Epochenschluss, festgehalten von der ersten Transaktion, die die Epoche danach
+  beruehrt (captureClose; jeder Angriff/Tally ruft es). Kein Spieler steuert ihn.
+seed(e) = keccak(preimage_e, closeHash_e). Der Keeper kennt ein Ergebnis NIE vor Epochenschluss.
+Es gibt keinen Angreifer-Input im Seed mehr (der fruehere attackDigest war ein Grinding-Eingang fuer
+den Keeper — K1, kritisch, behoben).
+Verbleibende Keeper-Macht: verzoegern (Epoche startet spaeter) oder nicht enthuellen. Preis:
+1. Versaeumte Enthuellung (2h nach Epochenende) = Epoche FAILED, jeder verliert, auch der Keeper.
+2. Slash = max(slashPerMiss, aktueller Pot) aus der Kaution in den Pot — Zurueckhalten kostet
+   mindestens das, was auf dem Spiel stand. `attack()` verweigert, solange die Kaution den Pot
+   nicht deckt (bondOk).
+3. Mints, deren Epoche nie einen Seed bekommt (Keeper weg): `reclaimUnrevealed` nach 7 Tagen
+   erstattet die 99 USDG aus der Reserve (Allowance noetig, `refundsReady()`).
+Restvertrauen, dokumentiert: der Post-Close-Blockhash stammt vom RH-Sequencer, der nichts zu
+gewinnen hat. Wer auch das nicht will: CCIP-Relay ueber proposeVrf. chain.json ist ein pot-wertiges
+Geheimnis und wird wie der Keeper-Key behandelt.
+Rollen: Multisig setzt/ersetzt den Keeper; Keeper committed, hinterlegt Kaution, enthuellt am Start;
+jeder darf captureClose, tally, settle, slash.
 
 ## VERTRAUENSANNAHMEN GEGENUEBER DER MULTISIG (gehoert woertlich in den Launch-Text)
 Auch nach renounceExemptControl und Ownership-Uebergabe verbleiben beim Owner:

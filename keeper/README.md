@@ -1,8 +1,16 @@
 # Keeper
 
-The keeper reveals one pre-committed value per epoch. It cannot choose values (the whole chain is
-fixed at commit time) and gains nothing by withholding (a missed reveal fails the epoch for everyone,
-including the keeper, and slashes its bond into the pot). It is an employee, not an authority.
+The keeper reveals one pre-committed value per epoch — at the epoch's START, so it is public while
+attacks are placed and decides nothing on its own (reveal-then-play). The seed is that value combined
+with a block hash captured after the epoch closed, which no player controls. The keeper therefore never
+knows a result before attacks are closed, cannot choose values (the chain is fixed at commit time), and
+gains nothing by withholding: a missed reveal fails the epoch for everyone, keeper included, and slashes
+max(floor, current pot) from its bond into the pot. Attacks are refused while the bond is below cover.
+
+**chain.json is a pot-sized secret.** Anyone holding it can act as keeper; treat it like the keeper key.
+
+Residual trust (documented, not solved): the post-close block hash is produced by Robinhood's
+sequencer, which has no stake in the game. Removing even that is the CCIP upgrade path (proposeVrf).
 
 ## One-time setup
 1. `npm i ethers ethereum-cryptography`
@@ -20,5 +28,6 @@ redundancy: the second one just sees "resolved" and skips. Monitor `Failed` even
 contract — each one is a missed reveal and a slashed bond.
 
 ## What it does every tick
-reveal → tally → settle for every closed epoch, then `meltPool()` and `swapTax()` as fallbacks.
+reveal the current epoch at its start; for closed epochs capture → tally → settle; then `meltPool()` and `swapTax()` as fallbacks.
+Bond: must stay ≥ the current pot; the bot warns when it is not.
 If the chain and the on-chain head ever disagree, it stops (exit 2) rather than burning gas.

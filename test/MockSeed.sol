@@ -10,6 +10,9 @@ contract MockSeed {
     function set(uint32 e, bytes32 s) external { seed[e] = s; }
     function fail(uint32 e) external { failed[e] = true; }
     function resolved(uint32 e) external view returns (bool) { return seed[e] != bytes32(0) || failed[e]; }
+    bool public bondOk = true;
+    function setBondOk(bool b) external { bondOk = b; }
+    function captureClose(uint32) external {}
 
     // --- helpers that mirror IRSAgent's derivations ---
     function tierOf(bytes32 s, uint256 id) public pure returns (uint8) {

@@ -394,6 +394,22 @@ und Allokation halten weiter. Deploy-Skript deployt die Quelle mit (KEEPER-Env),
 NEU ZU AUDITIEREN (das eine ungeschriebene Kapitel, jetzt geschrieben): src/HashChainSeed.sol und die
 Tally-/Reveal-Logik in IRSAgent.
 
+## Runde 19 — K-Serie: das Zufallskapitel hielt nicht
+**K1 (kritisch, mein Analysefehler).** Der `attackDigest` im Seed war kein Schutz, sondern ein
+Grinding-Eingang: der Keeper kennt jedes Urbild und konnte den Digest mit eigenen Angriffen so lange
+verlaengern, bis der Seed seine Agenten gewinnen liess (10 Agenten = 1.023 Kandidaten/Epoche, ~85% des
+Pots, ohne je einen Reveal zu verpassen). Mein Satz "niemand kennt das Ergebnis vor Schluss" war fuer
+den Keeper exakt falsch herum. Fix nach Auditor-Vorschlag: reveal-then-play — Urbild am Epochenanfang
+enthuellen (oeffentlich, entscheidet allein nichts), Unvorhersagbarkeit aus einem Post-Close-Blockhash,
+den kein Spieler steuert; Angreifer-Input aus dem Seed entfernt. Test testK1: der Keeper greift mit
+eigenen Agenten an, der Seed haengt nur von Urbild + Close-Hash ab.
+**K2 (hoch).** Slash von 1M RACKS war bei 69B Supply ~7 Cent — Zurueckhalten kostete nichts. Fix:
+Slash = max(Floor, aktueller Pot), Kaution muss das decken, `attack()` verweigert bei Unterdeckung.
+**K3.** Keeper 2h offline: Epoche faellt, alle verfehlen (gewollt). Keeper gibt auf: Mints blieben
+unrevealed, $99 verloren. Fix: `reclaimUnrevealed` nach 7 Tagen mit Erstattung aus der Reserve.
+Restvertrauen, explizit: der Close-Blockhash stammt vom RH-Sequencer (kein Stake). Entfernbar nur
+ueber CCIP (proposeVrf-Pfad). chain.json ist als pot-wertiges Geheimnis im Runbook markiert.
+
 ## Nicht gefunden (geprueft)
 - Flash-Loan-Manipulation des TWAP: Spot -75% in einem Block bewegt TWAP 0 bps (Stresstest).
 - Cayman-Inflation: Index-basiert, keine Share-Ratio -> kein First-Depositor-Vektor.

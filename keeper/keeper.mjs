@@ -9,7 +9,8 @@ const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
 
 const seedAbi  = ["function reveal(uint32 e, bytes32 preimage)", "function resolved(uint32 e) view returns (bool)",
-                  "function remaining() view returns (uint256)", "function head() view returns (bytes32)"];
+                  "function preimage(uint32 e) view returns (bytes32)", "function captureClose(uint32 e)",
+                  "function remaining() view returns (uint256)", "function head() view returns (bytes32)", "function bondOk() view returns (bool)"];
 const agentAbi = ["function currentEpoch() view returns (uint32)", "function epochEnd(uint32 e) view returns (uint256)",
                   "function settled(uint32 e) view returns (bool)", "function settledThrough() view returns (uint32)",
                   "function tallied(uint32 e) view returns (bool)", "function tally(uint32 e, uint256 count)",
@@ -29,18 +30,19 @@ async function tick() {
   const now = Math.floor(Date.now() / 1000);
   const cur = Number(await agent.currentEpoch());
   const from = Number(await agent.settledThrough());
-  // reveal + settle every closed epoch that still lacks a seed
+  if (!(await seed.bondOk())) console.error("WARNING: bond below cover — attacks are refused until topped up");
+  // 1) reveal-then-play: the CURRENT epoch's value goes public at its start
+  if ((await seed.preimage(cur)) === ethers.ZeroHash) {
+    const pre = chain.chain[state.nextIdx];
+    if (ethers.keccak256(pre) !== (await seed.head())) { console.error("chain out of sync at idx", state.nextIdx); process.exit(2); }
+    console.log(`reveal epoch ${cur} (start) with chain[${state.nextIdx}]`);
+    await (await seed.reveal(cur, pre)).wait();
+    state.nextIdx--; save();
+  }
+  // 2) for every closed epoch: capture post-close entropy, tally, settle
   for (let e = from; e < cur; e++) {
-    if (!(await seed.resolved(e))) {
-      const end = Number(await agent.epochEnd(e));
-      if (now < end) continue;
-      // sanity: the value we are about to reveal must hash to the on-chain head
-      const pre = chain.chain[state.nextIdx];
-      if (ethers.keccak256(pre) !== (await seed.head())) { console.error("chain out of sync at idx", state.nextIdx); process.exit(2); }
-      console.log(`reveal epoch ${e} with chain[${state.nextIdx}]`);
-      await (await seed.reveal(e, pre)).wait();
-      state.nextIdx--; save();
-    }
+    if (!(await seed.resolved(e))) { try { await (await seed.captureClose(e)).wait(); } catch {} }
+    if (!(await seed.resolved(e))) continue;                 // failed or still no entropy
     if (!(await agent.tallied(e))) { console.log(`tally ${e}`); await (await agent.tally(e, 200)).wait(); continue; }
     if (!(await agent.settled(e))) { console.log(`settle ${e}`); await (await agent.settle(e)).wait(); }
   }
